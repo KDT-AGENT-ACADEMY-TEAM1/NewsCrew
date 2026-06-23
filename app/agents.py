@@ -91,9 +91,50 @@ def search_news(query: str) -> str:
     )
 
 
+@tool
+def search_stock(symbol: str) -> str:
+    """주식 종목코드(티커)로 현재 주가·등락 정보를 조회합니다.
+
+    예) 애플=AAPL, 테슬라=TSLA, 삼성전자=005930.KS, SK하이닉스=000660.KS
+    """
+    print(f"\n[Tool 가동] search_stock -> {symbol}")
+    import requests   # 도구가 쓰일 때만 불러옵니다
+
+    symbol = symbol.strip().upper()
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    try:
+        resp = requests.get(
+            url,
+            params={"range": "1d", "interval": "1d"},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=8,
+        )
+        resp.raise_for_status()
+        meta = resp.json()["chart"]["result"][0]["meta"]
+    except Exception as e:   # 네트워크/잘못된 티커 등 → 안내 메시지로 폴백
+        print(f"[search_stock] 조회 실패: {e}")
+        return f"'{symbol}' 주가를 가져오지 못했습니다. (종목코드를 확인하거나 잠시 후 다시 시도)"
+
+    price = meta.get("regularMarketPrice")
+    prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+    currency = meta.get("currency", "")
+    name = meta.get("longName") or meta.get("shortName") or symbol
+
+    if price is None:
+        return f"'{symbol}' 종목을 찾을 수 없습니다. 종목코드를 확인해 주세요."
+
+    line = f"[{name} ({symbol})] 현재가 {price:,} {currency}"
+    if prev:
+        diff = price - prev
+        rate = diff / prev * 100 if prev else 0
+        sign = "▲" if diff > 0 else ("▼" if diff < 0 else "-")
+        line += f" / 전일대비 {sign} {abs(diff):,.2f} ({rate:+.2f}%)"
+    return line
+
+
 # 도구 목록 + 이름→함수 매핑 (소스의 tools_list / tools_map 패턴)
-TOOLS_LIST = [search_news]
-TOOLS_MAP = {"search_news": search_news}
+TOOLS_LIST = [search_news, search_stock]
+TOOLS_MAP = {"search_news": search_news, "search_stock": search_stock}
 
 
 # ==========================================================================
@@ -124,7 +165,8 @@ def research_node(state: NewsletterState) -> NewsletterState:
         system = (
             "너는 뉴스레터용 리서치 담당이다. "
             "키워드와 관련된 최신 동향을 조사해야 한다. "
-            "정보가 더 필요하면 search_news 도구를 호출하고, "
+            "최신 뉴스가 필요하면 search_news 도구를, "
+            "주가·증시 같은 종목 정보가 필요하면 search_stock 도구(종목코드 사용)를 호출하라. "
             "충분히 모았다면 핵심 내용을 한국어로 깔끔히 정리해 답하라."
         )
         seed = [
