@@ -168,14 +168,58 @@ def _keywords_by_rule(text: str) -> list[str]:
     return keywords[:4]   # 최대 4개만
 
 
-def md_to_html(text: str) -> str:
-    """마크다운 글(# 제목, - 목록 등)을 화면에 보여줄 HTML로 바꿉니다.
+def _inline_md(text: str) -> str:
+    """문장 안의 **굵게** 표시만 <b>로 바꿉니다."""
+    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
 
-    지금은 '줄바꿈만' 처리하는 가장 단순한 버전입니다.
+
+def md_to_html(text: str) -> str:
+    """마크다운 글(# 제목, - 목록 등)을 화면에 '적당한 크기'의 HTML로 바꿉니다.
+
+    제목/소제목/목록/인용/본문을 화면에 보기 좋은 폰트 크기로 렌더링합니다.
     """
-    # TODO: 여기 채우기 —— '# 제목' → <h3>, '- 항목' → <li> 처럼
-    #       마크다운 기호를 HTML 태그로 바꾸는 규칙을 넣어 보세요.
-    return text.replace("\n", "<br>")
+    html: list[str] = []
+    in_list = False
+
+    def close_list():
+        nonlocal in_list
+        if in_list:
+            html.append("</ul>")
+            in_list = False
+
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line:
+            close_list()
+            continue
+
+        # 목록: '- ' 또는 '* '
+        if line.startswith(("- ", "* ")):
+            if not in_list:
+                html.append("<ul style='margin:6px 0 6px 1.1rem; padding:0;'>")
+                in_list = True
+            html.append(f"<li style='margin:3px 0; line-height:1.7;'>{_inline_md(line[2:])}</li>")
+            continue
+
+        close_list()
+
+        if line.startswith("### "):
+            html.append(f"<h4 style='font-size:1.05rem; margin:12px 0 4px;'>{_inline_md(line[4:])}</h4>")
+        elif line.startswith("## "):
+            html.append(f"<h3 style='font-size:1.25rem; margin:16px 0 6px;'>{_inline_md(line[3:])}</h3>")
+        elif line.startswith("# "):
+            html.append(f"<h2 style='font-size:1.6rem; margin:4px 0 12px;'>{_inline_md(line[2:])}</h2>")
+        elif line.startswith("> "):
+            html.append(
+                "<blockquote style='color:#9aa3b2; border-left:3px solid #444; "
+                f"margin:8px 0; padding:2px 12px;'>{_inline_md(line[2:])}</blockquote>"
+            )
+        else:
+            html.append(f"<p style='margin:8px 0; line-height:1.75;'>{_inline_md(line)}</p>")
+
+    close_list()
+    body = "\n".join(html)
+    return f"<div style='font-size:1rem; line-height:1.75;'>{body}</div>"
 
 
 def draft_title(draft: str) -> str:
@@ -278,7 +322,7 @@ def page_input():
         st.markdown(f'<div class="msg {css}">{m["content"]}</div>',
                     unsafe_allow_html=True)
         if report_id:
-            if st.button("자세히 보기 →", key=f"detail_{i}",
+            if st.button("더보기", key=f"detail_{i}",
                          help="생성 결과 화면에서 전체 보고서 보기"):
                 open_report(report_id)
 
@@ -291,6 +335,30 @@ def page_input():
     if submitted and prompt.strip():
         handle_submit(prompt.strip())
         st.rerun()   # 화면을 새로 그려 방금 대화를 반영
+
+
+def push_report_message(snap: dict, intro: str):
+    """생성/재작성 결과를 채팅창에 '짧은 보고서 카드'로 추가합니다.
+
+    - 현재 보고서로 저장하고, report_id 로 다시 찾을 수 있게 보관합니다.
+    - 카드 끝에는 '더보기' 링크(아래 [더보기] 버튼이 실제 동작)를 붙입니다.
+    """
+    report_id = snap["thread_id"]
+    st.session_state.thread_id = report_id
+    st.session_state.snap = snap
+    st.session_state.reports[report_id] = snap
+    draft = snap["draft"]
+    score = snap.get("review", {}).get("score", "-")
+    st.session_state.messages.append({
+        "role": "assistant",
+        "report_id": report_id,
+        "content": (
+            f"{intro}<br>"
+            f"<b>{draft_title(draft)}</b> · 검수 {score}점<br>"
+            f"<span style='color:#bcd;'>{draft_excerpt(draft)}</span> "
+            f"<span style='color:#8ab4ff;'>더보기</span>"
+        ),
+    })
 
 
 def handle_submit(prompt: str):
@@ -309,23 +377,25 @@ def handle_submit(prompt: str):
     with st.spinner("뉴스레터를 만드는 중... 🛠️"):
         snap = run_pipeline(keywords, st.session_state.max_rev)
 
-    # 4. 결과 저장 + AI 답변 추가
-    report_id = snap["thread_id"]
-    st.session_state.thread_id = report_id
-    st.session_state.snap = snap
-    st.session_state.reports[report_id] = snap   # 보고서 ID로 다시 찾을 수 있게 보관
-    draft = snap["draft"]
-    score = snap.get("review", {}).get("score", "-")
-    st.session_state.messages.append({
-        "role": "assistant",
-        "report_id": report_id,                   # 이 답변에 연결된 보고서 ID
-        # 채팅 답변 안에 '짧은 보고서 카드'를 보여 줍니다.
-        "content": (
-            f"'{', '.join(keywords)}' 뉴스레터를 만들었어요! 📰<br>"
-            f"<b>{draft_title(draft)}</b> · 검수 {score}점<br>"
-            f"<span style='color:#bcd;'>{draft_excerpt(draft)}</span>"
-        ),
-    })
+    # 4. 결과 카드를 채팅에 추가
+    push_report_message(snap, f"'{', '.join(keywords)}' 뉴스레터를 만들었어요! 📰")
+
+
+def handle_reject_to_chat(thread_id: str, feedback: str):
+    """'반려 → 재작성': 수정 요청을 채팅으로 가져와 재작성하고 채팅 화면으로 돌아갑니다."""
+    # 1. 수정 요청 문구를 채팅창에 내 메시지로 추가
+    request_text = feedback or "다시 작성해 주세요."
+    st.session_state.messages.append(
+        {"role": "user", "content": f"↩️ 수정 요청: {request_text}"})
+
+    # 2. 피드백을 반영해 재작성 실행
+    with st.spinner("수정 요청을 반영해 다시 작성하는 중... ✍️"):
+        snap = reject(thread_id, feedback)
+
+    # 3. 새 결과 카드를 채팅에 추가 + 채팅 화면으로 이동
+    push_report_message(snap, "수정 요청을 반영해 다시 작성했어요! ✍️")
+    st.session_state.goto = "📝 뉴스레터작성"
+    st.rerun()
 
 
 # ==========================================================================
