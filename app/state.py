@@ -10,7 +10,9 @@ TypedDict 란?
 """
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Annotated, TypedDict
+
+from langgraph.graph.message import add_messages
 
 
 # --------------------------------------------------------------------------
@@ -30,6 +32,12 @@ class ReviewResult(TypedDict):
 class NewsletterState(TypedDict, total=False):
     # 1) 사용자 입력
     keywords: list[str]        # 관심 키워드 (예: ["전기차", "배터리"])
+
+    # [리서치 에이전트 ⇄ 도구] 대화 기록
+    #   add_messages: 노드가 돌려준 메시지를 '덮어쓰지 않고 뒤에 이어 붙이는' 합치기 규칙.
+    #   (LLM ↔ 도구가 여러 번 주고받을 때 대화 맥락이 쌓입니다)
+    messages: Annotated[list, add_messages]
+    tool_results: str          # [리서치] 도구(검색 등) 실행 결과 모음
 
     # 2~4) 각 에이전트가 채우는 결과
     research: str              # [리서치] 수집·정리한 자료

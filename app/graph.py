@@ -5,20 +5,29 @@
   화살표(edge)를 따라 상태(메모지)가 흘러갑니다.
 
 이 파이프라인의 지도:
-  START → research → write → review → (검수 결과로 갈림)
-                                         ├─ 통과/한도초과 → send → END
-                                         └─ 미달          → write (다시 작성)
+  START → research → (도구 필요?) ─┬─ tools → research (도구 결과 반영해 다시 판단)
+                                  └─ write → review → (검수 결과로 갈림)
+                                                        ├─ 통과/한도초과 → send → END
+                                                        └─ 미달          → write (다시 작성)
 
-두 가지 핵심 개념:
-  1) 조건부 분기(Conditional Edge): 검수 결과에 따라 다음 길을 다르게 정함
-  2) 사람 승인(Human-in-the-loop): send 직전에 잠깐 멈춰 사람의 승인을 기다림
+세 가지 핵심 개념:
+  1) 도구 루프(agent ⇄ tools): 리서치 LLM이 필요하면 도구를 부르고 결과를 받아 다시 판단
+  2) 조건부 분기(Conditional Edge): 검수 결과/도구 호출 여부에 따라 다음 길을 다르게 정함
+  3) 사람 승인(Human-in-the-loop): send 직전에 잠깐 멈춰 사람의 승인을 기다림
 """
 from __future__ import annotations
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from .agents import research_node, review_node, send_node, write_node
+from .agents import (
+    research_node,
+    review_node,
+    route_after_research,
+    send_node,
+    tools_node,
+    write_node,
+)
 from .state import NewsletterState
 
 
@@ -49,17 +58,25 @@ def build_graph():
     builder = StateGraph(NewsletterState)
 
     # (2) 노드 등록: ("이름", 실행할 함수)
-    builder.add_node("research", research_node)
+    builder.add_node("research", research_node)   # 리서치 에이전트(LLM)
+    builder.add_node("tools", tools_node)         # 도구 실행
     builder.add_node("write", write_node)
     builder.add_node("review", review_node)
     builder.add_node("send", send_node)
 
     # (3) 화살표 연결: a 다음 b
     builder.add_edge(START, "research")   # 시작 → 리서치
-    builder.add_edge("research", "write") # 리서치 → 작성
-    builder.add_edge("write", "review")   # 작성 → 검수
 
-    # (4) 검수 다음은 '갈림길': route_after_review 가 정한 곳으로 보냄
+    # (4-a) 리서치 다음은 '갈림길': 도구가 필요하면 tools, 아니면 write
+    builder.add_conditional_edges(
+        "research",
+        route_after_research,
+        {"tools": "tools", "write": "write"},
+    )
+    builder.add_edge("tools", "research")  # 도구 실행 후 다시 리서치 에이전트로(결과 반영)
+    builder.add_edge("write", "review")    # 작성 → 검수
+
+    # (4-b) 검수 다음은 '갈림길': route_after_review 가 정한 곳으로 보냄
     builder.add_conditional_edges(
         "review",
         route_after_review,

@@ -7,46 +7,64 @@
   예)  def write_node(state):  ...  return {"draft": "...", "status": "reviewing"}
        → state["draft"], state["status"] 가 갱신됩니다.
 
-여기서는 진짜 AI(LLM) 호출을 비워 두고, 'Mock(가짜)' 결과로 동작합니다.
-실제 AI를 붙이려면 각 노드의  # TODO: 여기 채우기  부분을 채우세요.
+[이 파일에서 보여 주는 3가지 패턴] (박희순_과제소스 참고)
+  ① LLM 사용     : ChatOpenAI(...).invoke(messages)
+  ② Tool(도구)   : @tool 로 함수를 도구로 등록 → LLM 이 필요할 때 호출
+  ③ Tool 실행 루프: 'agent ⇄ tools' 를 should_continue 조건부 분기로 반복
+
+OPENAI_API_KEY 가 없으면(또는 호출 실패 시) 자동으로 '가짜(Mock) 모드'로 떨어져
+키 없이도 앱 흐름은 그대로 동작합니다.
 """
 from __future__ import annotations
+
+import os
+from functools import lru_cache
+
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
 
 from .state import NewsletterState, ReviewResult
 
 
 # ==========================================================================
-# 공통 도우미 — AI(LLM) 호출
-#   OPENAI_API_KEY 가 있으면 진짜 LLM을, 없으면 가짜 텍스트를 돌려줍니다.
+# 공통 도우미 — LLM 준비 (박희순_과제소스의 ChatOpenAI 사용법 참고)
 # ==========================================================================
-import os
-from functools import lru_cache
+def _model_name() -> str:
+    """사용할 모델 이름. (환경변수 OPENAI_MODEL 로 바꿀 수 있음)"""
+    return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 
-@lru_cache(maxsize=1)
-def _get_llm():
-    """LLM 객체를 한 번만 만들어 재사용합니다. (키/패키지 없으면 None)"""
+@lru_cache(maxsize=2)
+def _get_llm(with_tools: bool):
+    """LLM 객체를 한 번만 만들어 재사용합니다. (키/패키지 없으면 None)
+
+    with_tools=True 면 도구를 붙인(bind_tools) LLM을 돌려줍니다.
+    """
     if not os.getenv("OPENAI_API_KEY"):
         return None
     try:
         from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
+        llm = ChatOpenAI(
+            model=_model_name(),
+            temperature=0.4,
+            api_key=os.getenv("OPENAI_API_KEY"),
+        )
+        # ② 도구 사용: bind_tools 로 'LLM이 부를 수 있는 도구 목록'을 알려 줍니다.
+        return llm.bind_tools(TOOLS_LIST) if with_tools else llm
     except Exception as e:   # 패키지 미설치 등 → 가짜 모드로 폴백
         print(f"[AI] LLM 준비 실패 → 가짜 모드로 동작합니다: {e}")
         return None
 
 
 def ask_ai(system: str, user: str) -> str:
-    """AI에게 system(역할 지시) + user(요청)를 보내고 답변 글을 받습니다.
+    """AI에게 system(역할 지시) + user(요청)를 보내고 '글'을 받습니다. (도구 없음)
 
-    OPENAI_API_KEY 가 설정돼 있으면 진짜 LLM을 호출하고,
-    없으면(또는 호출 실패 시) 기존처럼 가짜 답변을 돌려줍니다.
+    OPENAI_API_KEY 가 있으면 진짜 LLM을, 없으면(또는 실패 시) 가짜 답변을 돌려줍니다.
     """
-    llm = _get_llm()
+    llm = _get_llm(with_tools=False)
     if llm is None:
         return f"[가짜 AI 답변] {user[:200]}"
     try:
-        from langchain_core.messages import HumanMessage, SystemMessage
         return llm.invoke(
             [SystemMessage(content=system), HumanMessage(content=user)]
         ).content
@@ -56,51 +74,133 @@ def ask_ai(system: str, user: str) -> str:
 
 
 # ==========================================================================
-# STEP 2. 리서치 노드 — 키워드 관련 자료 수집·정리
+# 도구(Tool) 정의 — @tool 데코레이터 (박희순_과제소스의 get_weather/exchange_info 참고)
+#   LLM이 "이 도구가 필요하다"고 판단하면 자동으로 호출합니다.
+# ==========================================================================
+@tool
+def search_news(query: str) -> str:
+    """키워드로 최신 뉴스/동향을 검색해 핵심 내용을 돌려줍니다."""
+    print(f"\n[Tool 가동] search_news -> {query}")
+    # TODO: 여기 채우기 —— 실제 뉴스 검색 API(네이버/구글/Tavily 등)로 교체.
+    #   지금은 학습용으로 키워드를 엮은 '가짜 검색 결과'를 돌려줍니다.
+    return (
+        f"'{query}' 관련 최신 동향(검색 결과 예시):\n"
+        f"- 시장이 빠르게 성장하며 투자가 늘고 있습니다.\n"
+        f"- 신규 기술·서비스 출시가 이어지고 있습니다.\n"
+        f"- 정책/규제 논의도 활발해지는 추세입니다."
+    )
+
+
+# 도구 목록 + 이름→함수 매핑 (소스의 tools_list / tools_map 패턴)
+TOOLS_LIST = [search_news]
+TOOLS_MAP = {"search_news": search_news}
+
+
+# ==========================================================================
+# STEP 2-a. 리서치 '에이전트' 노드 — LLM이 도구를 쓸지 스스로 판단
+#   (소스의 agent_node 패턴: SystemMessage + 누적 messages 를 LLM에 전달)
 # ==========================================================================
 def research_node(state: NewsletterState) -> NewsletterState:
     keywords = state.get("keywords", [])
     kw = ", ".join(keywords)
-    print(f"[리서치] 자료 조사 중: {kw}")
+    print(f"\n--- [Node: research] 리서치 에이전트 판단 중: {kw} ---")
 
-    # TODO: 여기 채우기 —— ask_ai() 로 진짜 리서치를 시키려면 아래 가짜 부분을 교체.
-    research = (
-        f"'{kw}' 관련 핵심 동향(예시):\n"
-        f"1. 시장이 빠르게 성장하고 있습니다.\n"
-        f"2. 신규 기술/서비스가 계속 나오고 있습니다.\n"
-        f"3. 사람들의 관심도가 크게 늘었습니다."
-    )
+    llm = _get_llm(with_tools=True)
 
-    # 바뀐 부분만 돌려줍니다 → 다음 단계는 '작성(writing)'
-    return {"research": research, "status": "writing"}
+    # (폴백) LLM이 없으면 도구 루프 없이 가짜 리서치만 채우고 작성 단계로.
+    if llm is None:
+        research = (
+            f"'{kw}' 관련 핵심 동향(예시):\n"
+            f"1. 시장이 빠르게 성장하고 있습니다.\n"
+            f"2. 신규 기술/서비스가 계속 나오고 있습니다.\n"
+            f"3. 사람들의 관심도가 크게 늘었습니다."
+        )
+        return {"research": research, "status": "writing"}
+
+    # 첫 진입이면 system + 사용자 요청 메시지를 만들어 대화를 시작합니다.
+    existing = state.get("messages") or []
+    seed: list = []
+    if not existing:
+        system = (
+            "너는 뉴스레터용 리서치 담당이다. "
+            "키워드와 관련된 최신 동향을 조사해야 한다. "
+            "정보가 더 필요하면 search_news 도구를 호출하고, "
+            "충분히 모았다면 핵심 내용을 한국어로 깔끔히 정리해 답하라."
+        )
+        seed = [
+            SystemMessage(content=system),
+            HumanMessage(content=f"키워드: {kw}\n위 주제로 뉴스레터에 쓸 리서치를 해 줘."),
+        ]
+
+    # ① LLM 호출: 지금까지의 대화(seed + 누적 messages)를 모두 넘깁니다.
+    response = llm.invoke(seed + existing)
+
+    update: NewsletterState = {"messages": seed + [response], "status": "researching"}
+    # 도구 호출 없이 '글'로 답했다면 그게 곧 리서치 결과입니다.
+    if getattr(response, "content", ""):
+        update["research"] = response.content
+    return update
 
 
 # ==========================================================================
-# STEP 3. 작성 노드 — 리서치를 바탕으로 초안 작성
+# STEP 2-b. 도구 실행 노드 — LLM이 요청한 도구를 실제로 호출
+#   (소스의 tool_node 패턴: tool_calls 순회 → ToolMessage 로 결과 반환)
+# ==========================================================================
+def tools_node(state: NewsletterState) -> NewsletterState:
+    print("\n--- [Node: tools] 에이전트의 지시로 도구를 실행합니다 ---")
+    last_message = (state.get("messages") or [])[-1]
+
+    tool_outputs: list = []
+    results: list[str] = []
+    for tool_call in getattr(last_message, "tool_calls", []) or []:
+        name = tool_call["name"]
+        print(f"LLM이 요청한 도구 이름: {name}")
+        result = TOOLS_MAP[name].invoke(tool_call["args"])
+        results.append(f"[{name}] {result}")
+        # 도구 결과는 반드시 ToolMessage(같은 tool_call_id)로 돌려줘야 LLM이 이어 갑니다.
+        tool_outputs.append(
+            ToolMessage(content=str(result), tool_call_id=tool_call["id"], name=name)
+        )
+
+    prev = state.get("tool_results", "")
+    new_results = "\n".join(results)
+    combined = f"{prev}\n{new_results}".strip() if prev else new_results
+    return {"messages": tool_outputs, "tool_results": combined}
+
+
+# ==========================================================================
+# STEP 2-c. 조건부 분기 — 도구를 더 쓸지 / 작성 단계로 갈지
+#   (소스의 should_continue 패턴: 마지막 메시지에 tool_calls 있으면 도구로)
+# ==========================================================================
+def route_after_research(state: NewsletterState) -> str:
+    messages = state.get("messages") or []
+    if messages and getattr(messages[-1], "tool_calls", None):
+        print("[의사결정] 도구 호출 요청 -> 'tools' 노드로 이동")
+        return "tools"
+    print("[의사결정] 리서치 완료 -> 'write' 노드로 이동")
+    return "write"
+
+
+# ==========================================================================
+# STEP 3. 작성 노드 — 리서치를 바탕으로 초안 작성 (LLM 사용)
 # ==========================================================================
 def write_node(state: NewsletterState) -> NewsletterState:
-    research = state.get("research", "")
+    research = state.get("research", "") or state.get("tool_results", "")
     revision = state.get("revision_count", 0)
 
-    # 검수에서 미달이었거나, 사람이 반려했으면 그 피드백을 반영
     feedback = _pick_feedback(state)
     print(f"[작성] 초안 작성 중 ({revision}회차)"
           + (f" / 피드백 반영: {feedback}" if feedback else ""))
 
-    # TODO: 여기 채우기 —— ask_ai() 로 진짜 작성을 시키려면 아래 가짜 부분을 교체.
-    draft = (
-        "# 이번 주 뉴스레터\n\n"
-        "안녕하세요! 맞춤 뉴스레터입니다.\n\n"
-        f"## 주요 소식\n{research}\n\n"
-        "## 마무리\n다음 호에서 또 찾아뵐게요."
+    system = (
+        "너는 뉴스레터 작성자다. 아래 리서치를 바탕으로 친근한 한국어 뉴스레터 초안을 써라. "
+        "맨 위에 '# 제목' 한 줄, 본문에는 '## 소제목'을 2개 이상 넣어 마크다운으로 작성하라."
     )
+    user = f"[리서치]\n{research}\n"
     if feedback:
-        draft += f"\n\n> (수정 반영: {feedback})"
+        user += f"\n[수정 요청]\n{feedback}\n위 요청을 반드시 반영해서 다시 써 줘."
 
-    # [학습용 장치] 첫 초안은 일부러 짧게 만들어 '검수 미달 → 재작성' 루프를 보여줍니다.
-    if revision == 0 and not feedback:
-        draft = "# 뉴스레터\n\n소식입니다.\n"   # 너무 짧음 → 검수 탈락 예정
-
+    draft = ask_ai(system, user)
     return {"draft": draft, "status": "reviewing"}
 
 
@@ -124,15 +224,13 @@ def review_node(state: NewsletterState) -> NewsletterState:
     revision = state.get("revision_count", 0)
     print(f"[검수] 품질 검증 중 ({revision}회차)")
 
-    # TODO: 여기 채우기 —— ask_ai() 로 진짜 검수를 시키려면 아래 '간단 규칙'을 교체.
-    #   (진짜로 할 땐 AI가 점수/통과여부를 글로 답하므로, 그 글에서 숫자를 뽑아내야 합니다)
+    # TODO: ask_ai() 로 LLM 검수를 시키고 싶으면 _simple_review 를 교체하세요.
     review = _simple_review(draft)
 
     print(f"[검수] 결과: {'통과' if review['passed'] else '미달'} (점수 {review['score']})")
     return {
         "review": review,
         "revision_count": revision + 1,
-        # 통과면 승인 대기로, 미달이면 다시 작성으로
         "status": "awaiting_approval" if review["passed"] else "writing",
         "human_feedback": "",   # 피드백은 한 번 쓰고 비웁니다
     }
@@ -164,5 +262,4 @@ def send_node(state: NewsletterState) -> NewsletterState:
     print("[발송] 승인 완료 → 발송 및 이력 저장")
 
     # TODO: 여기 채우기 —— 실제 이메일 발송(예: AWS SES) + DB 저장.
-    #   지금은 그냥 '발송됨' 상태로만 바꿉니다.
     return {"final": draft, "status": "sent"}
