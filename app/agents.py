@@ -17,17 +17,42 @@ from .state import NewsletterState, ReviewResult
 
 # ==========================================================================
 # 공통 도우미 — AI(LLM) 호출
-#   지금은 항상 가짜 텍스트를 돌려줍니다.
+#   OPENAI_API_KEY 가 있으면 진짜 LLM을, 없으면 가짜 텍스트를 돌려줍니다.
 # ==========================================================================
+import os
+from functools import lru_cache
+
+
+@lru_cache(maxsize=1)
+def _get_llm():
+    """LLM 객체를 한 번만 만들어 재사용합니다. (키/패키지 없으면 None)"""
+    if not os.getenv("OPENAI_API_KEY"):
+        return None
+    try:
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
+    except Exception as e:   # 패키지 미설치 등 → 가짜 모드로 폴백
+        print(f"[AI] LLM 준비 실패 → 가짜 모드로 동작합니다: {e}")
+        return None
+
+
 def ask_ai(system: str, user: str) -> str:
-    """AI에게 system(역할 지시) + user(요청)를 보내고 답변 글을 받습니다."""
-    # TODO: 여기 채우기 —— 진짜 LLM 호출.
-    #   from langchain_openai import ChatOpenAI
-    #   from langchain_core.messages import SystemMessage, HumanMessage
-    #   llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
-    #   return llm.invoke([SystemMessage(content=system),
-    #                      HumanMessage(content=user)]).content
-    return f"[가짜 AI 답변] {user[:200]}"
+    """AI에게 system(역할 지시) + user(요청)를 보내고 답변 글을 받습니다.
+
+    OPENAI_API_KEY 가 설정돼 있으면 진짜 LLM을 호출하고,
+    없으면(또는 호출 실패 시) 기존처럼 가짜 답변을 돌려줍니다.
+    """
+    llm = _get_llm()
+    if llm is None:
+        return f"[가짜 AI 답변] {user[:200]}"
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        return llm.invoke(
+            [SystemMessage(content=system), HumanMessage(content=user)]
+        ).content
+    except Exception as e:   # 네트워크/쿼터 오류 등 → 가짜 모드로 폴백
+        print(f"[AI] 호출 실패 → 가짜 답변으로 대체: {e}")
+        return f"[가짜 AI 답변] {user[:200]}"
 
 
 # ==========================================================================

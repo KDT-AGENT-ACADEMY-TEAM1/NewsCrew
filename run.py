@@ -16,6 +16,7 @@ import uuid                      # 매번 다른 작업 ID(thread_id) 만들 때
 
 import streamlit as st
 
+from app.agents import ask_ai    # LLM 호출 도우미 (키워드 추출에 사용)
 from app.graph import graph      # 실제 일을 하는 AI 그래프(백엔드)
 
 
@@ -98,19 +99,57 @@ def _strip_particle(word: str) -> str:
 
 
 def extract_keywords(text: str) -> list[str]:
-    """사용자의 '자연어 문장'에서 핵심 키워드만 뽑아냅니다.
+    """사용자의 '자연어 문장'에서 핵심 키워드를 뽑아냅니다.
 
     예) "전기차랑 배터리 소식 정리해줘" → ["전기차", "배터리"]
+
+    1순위로 LLM(ask_ai)에게 키워드 추출을 맡기고,
+    LLM을 못 쓰거나(키 없음/오류) 결과가 비면 규칙 기반(_keywords_by_rule)으로 폴백합니다.
+    """
+    llm_keywords = _keywords_by_llm(text)
+    if llm_keywords:
+        return llm_keywords
+    return _keywords_by_rule(text)   # 폴백
+
+
+def _keywords_by_llm(text: str) -> list[str]:
+    """LLM에게 자연어 문장에서 검색 키워드만 뽑아 달라고 시킵니다.
+
+    실패하거나(가짜 모드 포함) 결과가 비면 빈 리스트를 돌려줘서
+    호출 쪽이 규칙 기반으로 폴백할 수 있게 합니다.
+    """
+    system = (
+        "너는 뉴스 검색용 키워드 추출기다. "
+        "사용자 문장에서 핵심 주제어(명사구)만 뽑아라. "
+        "'뉴스/소식/정리해줘' 같은 요청·꾸밈 표현과 조사는 빼라. "
+        "최대 4개를 한국어로, 쉼표(,)로만 구분해서 출력하라. "
+        "설명·번호·따옴표 없이 키워드만 출력하라."
+    )
+    answer = ask_ai(system, text)
+
+    # 가짜 모드면 "[가짜 AI 답변] ..." 가 오므로 키워드로 쓰지 않고 폴백
+    if not answer or answer.startswith("[가짜 AI 답변]"):
+        return []
+
+    keywords: list[str] = []
+    for part in answer.replace("\n", ",").split(","):
+        kw = part.strip().strip("\"'·-•").strip()
+        if kw and kw not in keywords:
+            keywords.append(kw)
+    return keywords[:4]
+
+
+def _keywords_by_rule(text: str) -> list[str]:
+    """규칙 기반 키워드 추출 (LLM 폴백용).
 
     처리 순서:
       1) 기호/문장부호 제거 (한글·영문·숫자·공백만 남김)
       2) 띄어쓰기로 단어 나누기
-      3) 단어 끝의 조사 떼기 ('전기차랑' → '전기차')
-      4) 불필요한 단어(STOPWORDS)·1글자 단어 거르기
-      5) 중복 제거 후 최대 4개만
+      3) '~해줘/~주세요' 부탁 표현 버림
+      4) 단어 끝의 조사 떼기 ('전기차랑' → '전기차')
+      5) 불필요한 단어(STOPWORDS)·1글자 단어 거르기
+      6) 중복 제거 후 최대 4개만
     """
-    # TODO: 더 똑똑하게: ask_ai() 로 LLM에게 키워드 추출을 맡기거나,
-    #       형태소 분석기(예: konlpy)로 명사만 뽑으면 정확도가 올라갑니다.
     cleaned = re.sub(r"[^0-9A-Za-z가-힣\s]", " ", text)   # 1) 기호 제거
 
     keywords: list[str] = []
@@ -120,7 +159,7 @@ def extract_keywords(text: str) -> list[str]:
         word = _strip_particle(raw)                        # 4) 조사 떼기
         if len(word) < 2 or word in STOPWORDS:             # 5) 불용어·1글자 거르기
             continue
-        if word not in keywords:                           # 5) 중복 제거
+        if word not in keywords:                           # 6) 중복 제거
             keywords.append(word)
 
     return keywords[:4]   # 최대 4개만
