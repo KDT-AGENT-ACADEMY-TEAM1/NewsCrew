@@ -61,6 +61,9 @@ def init_state():
     ss.setdefault("snap", None)                        # AI가 만든 결과(초안 등)
     ss.setdefault("max_rev", 2)                        # 최대 재작성 횟수
     ss.setdefault("menu", "📝 사용자 입력")             # 현재 선택된 메뉴(페이지)
+    ss.setdefault("subscribers", [])                   # 메일링리스트(구독자 이메일)
+    ss.setdefault("reports", {})                        # 보고서 ID → 생성 결과(snap)
+    ss.setdefault("menu", "📝 뉴스레터작성")             # 현재 선택된 메뉴(페이지)
 
 
 # ==========================================================================
@@ -184,6 +187,16 @@ def draft_title(draft: str) -> str:
     return "뉴스레터"
 
 
+def draft_excerpt(draft: str, length: int = 120) -> str:
+    """초안에서 제목/소제목·빈 줄을 빼고 첫 본문 문장을 짧게 뽑아냅니다."""
+    for line in draft.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith(">"):
+            continue
+        return line if len(line) <= length else line[:length].rstrip() + "…"
+    return ""
+
+
 # ==========================================================================
 # 4) AI 백엔드(app/graph.py) 연동
 #    여기 3개 함수가 '화면'과 'AI 그래프'를 이어 주는 다리입니다.
@@ -241,14 +254,34 @@ def reject(thread_id: str, feedback: str) -> dict:
 # ==========================================================================
 # 5) 화면(페이지) — 사용자 입력 + 채팅
 # ==========================================================================
+def open_report(report_id: str):
+    """보고서 ID로 결과를 불러와 '뉴스레터 생성 결과' 화면으로 이동합니다."""
+    snap = st.session_state.reports.get(report_id)
+    if snap:
+        st.session_state.snap = snap
+        st.session_state.thread_id = report_id
+    # 주의) 라디오(key="menu") 위젯이 이미 만들어진 뒤라 menu 를 직접 못 바꿉니다.
+    #       '이동 예약(goto)'만 남기고, 다음 실행 때 위젯 생성 전에 적용합니다.
+    st.session_state.goto = "📨 뉴스레터 생성 결과"
+    st.rerun()
+
+
 def page_input():
-    st.markdown("## 📝 사용자 입력")
+    st.markdown("## 📝 뉴스레터용 보고서 작성")
 
     # (1) 지금까지의 대화를 말풍선으로 그리기
-    for m in st.session_state.messages:
+    #     - 보고서 ID(report_id)가 달린 AI 답변에는 네이비 말풍선 안에 🔍 아이콘을 둡니다.
+    for i, m in enumerate(st.session_state.messages):
         css = "user" if m["role"] == "user" else "bot"
+        report_id = m.get("report_id")
+
+        # 보고서 답변이면 말풍선(요약) + 그 아래 [자세히 보기] 버튼
         st.markdown(f'<div class="msg {css}">{m["content"]}</div>',
                     unsafe_allow_html=True)
+        if report_id:
+            if st.button("자세히 보기 →", key=f"detail_{i}",
+                         help="생성 결과 화면에서 전체 보고서 보기"):
+                open_report(report_id)
 
     # (2) 입력 폼 — 전송 버튼을 누르면 submitted 가 True 가 됩니다.
     with st.form("chat_form", clear_on_submit=True):
@@ -278,14 +311,21 @@ def handle_submit(prompt: str):
         snap = run_pipeline(keywords, st.session_state.max_rev)
 
     # 4. 결과 저장 + AI 답변 추가
-    st.session_state.thread_id = snap["thread_id"]
+    report_id = snap["thread_id"]
+    st.session_state.thread_id = report_id
     st.session_state.snap = snap
+    st.session_state.reports[report_id] = snap   # 보고서 ID로 다시 찾을 수 있게 보관
+    draft = snap["draft"]
     score = snap.get("review", {}).get("score", "-")
     st.session_state.messages.append({
         "role": "assistant",
-        "content": (f"'{', '.join(keywords)}' 뉴스레터를 만들었어요!<br>"
-                    f"📰 <b>{draft_title(snap['draft'])}</b> · 검수 {score}점<br>"
-                    "왼쪽 메뉴 '생성 결과'에서 확인 후 승인/반려해 주세요."),
+        "report_id": report_id,                   # 이 답변에 연결된 보고서 ID
+        # 채팅 답변 안에 '짧은 보고서 카드'를 보여 줍니다.
+        "content": (
+            f"'{', '.join(keywords)}' 뉴스레터를 만들었어요! 📰<br>"
+            f"<b>{draft_title(draft)}</b> · 검수 {score}점<br>"
+            f"<span style='color:#bcd;'>{draft_excerpt(draft)}</span>"
+        ),
     })
 
 
@@ -354,13 +394,71 @@ def page_result():
 
 
 # ==========================================================================
+# 6-2) 화면(페이지) — 메일링리스트(구독자 이메일) 관리
+# ==========================================================================
+def _valid_email(email: str) -> bool:
+    """아주 단순한 이메일 형식 검사 (a@b.c 꼴)."""
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email))
+
+
+def userlists():
+    st.markdown("## 📨 메일링리스트")
+    st.caption("뉴스레터를 받을 구독자 이메일을 관리합니다.")
+
+    subs = st.session_state.subscribers
+
+    # (1) 새 구독자 추가 폼
+    with st.form("add_sub_form", clear_on_submit=True):
+        email = st.text_input("구독자 이메일", placeholder="예: reader@example.com")
+        added = st.form_submit_button("➕ 추가")
+
+    if added:
+        email = email.strip().lower()
+        if not _valid_email(email):
+            st.warning("올바른 이메일 형식이 아닙니다.")
+        elif email in subs:
+            st.info("이미 등록된 이메일입니다.")
+        else:
+            subs.append(email)
+            st.success(f"{email} 추가됨!")
+            st.rerun()
+
+    st.divider()
+
+    # (2) 등록된 구독자 목록 + 삭제 버튼
+    if not subs:
+        st.info("아직 등록된 구독자가 없습니다. 위에서 이메일을 추가하세요.")
+        return
+
+    st.write(f"총 **{len(subs)}명** 구독 중")
+    for i, email in enumerate(subs):
+        c1, c2 = st.columns([5, 1])
+        c1.write(f"{i + 1}. {email}")
+        if c2.button("🗑️", key=f"del_{i}", help="삭제"):
+            subs.pop(i)
+            st.rerun()
+
+
+# ==========================================================================
 # 7) 사이드바(왼쪽 메뉴) + 페이지 전환
 #    - 메뉴를 추가하려면 PAGES 에 ("이름": 함수) 한 줄만 더하면 됩니다.
 # ==========================================================================
 PAGES = {
-    "📝 사용자 입력": page_input,
-    "📨 생성 결과": page_result,
+    "📝 뉴스레터작성": page_input,
+    "📨 뉴스레터 생성 결과": page_result,
+    "📨 메일링리스트": userlists,
 }
+
+
+def render_header():
+    """모든 페이지 상단에 공통으로 보이는 큰 제목."""
+    st.markdown(
+        "<h1 style='text-align:center; margin:0 0 4px;'>뉴스레터 자동 생성 Agent</h1>"
+        "<p style='text-align:center; color:#888; margin:0 0 16px;'>"
+        "키워드만 입력하면 리서치 → 작성 → 검수 → 발송까지 자동으로!</p>"
+        "<hr style='margin:0 0 20px;'>",
+        unsafe_allow_html=True,
+    )
 
 
 def render_sidebar() -> str:
@@ -368,6 +466,16 @@ def render_sidebar() -> str:
 
     key="menu" 로 선택값을 묶어 두어, handle_reject_to_chat() 처럼 코드에서
     '이동 예약(goto)'을 남기면 위젯 생성 '전에' 반영되어 페이지가 전환됩니다.
+    """
+    # 라디오 위젯을 만들기 전에만 menu 값을 바꿀 수 있습니다.
+    pending = st.session_state.pop("goto", None)
+    if pending in PAGES:
+        st.session_state.menu = pending
+
+    """왼쪽 메뉴를 그리고, 사용자가 고른 페이지 이름을 돌려줍니다.
+
+    key="menu" 로 선택값을 st.session_state.menu 에 묶어 두었습니다.
+    → open_report() 가 남긴 '이동 예약(goto)'을 위젯 생성 '전에' 반영해 페이지를 전환합니다.
     """
     # 라디오 위젯을 만들기 전에만 menu 값을 바꿀 수 있습니다.
     pending = st.session_state.pop("goto", None)
@@ -382,6 +490,7 @@ def render_sidebar() -> str:
             help="검수에서 품질 미달 시 작성 단계로 되돌아가는 최대 횟수",
         )
         choice = st.radio("메뉴", list(PAGES.keys()), key="menu")
+        choice = st.radio("메뉴", list(PAGES.keys()), key="menu")
     return choice
 
 
@@ -393,7 +502,8 @@ def main():
     inject_css()                 # 2. 화면 꾸미기
     init_state()                 # 3. 기억 상자 준비
     choice = render_sidebar()    # 4. 왼쪽 메뉴 그리기
-    PAGES[choice]()              # 5. 고른 메뉴의 페이지 함수 실행
+    render_header()              # 5. 모든 페이지 공통 상단 제목
+    PAGES[choice]()              # 6. 고른 메뉴의 페이지 함수 실행
 
 
 main()
