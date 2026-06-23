@@ -60,6 +60,7 @@ def init_state():
     ss.setdefault("thread_id", None)                  # 현재 작업 ID
     ss.setdefault("snap", None)                        # AI가 만든 결과(초안 등)
     ss.setdefault("max_rev", 2)                        # 최대 재작성 횟수
+    ss.setdefault("menu", "📝 사용자 입력")             # 현재 선택된 메뉴(페이지)
 
 
 # ==========================================================================
@@ -288,6 +289,33 @@ def handle_submit(prompt: str):
     })
 
 
+def handle_reject_to_chat(thread_id: str, feedback: str):
+    """'반려 → 재작성': 수정 요청 문구를 채팅창으로 가져와 재작성하고 채팅 화면으로 돌아갑니다."""
+    # 1. 수정 요청 문구를 채팅창에 '내 메시지'로 추가
+    request_text = feedback or "다시 작성해 주세요."
+    st.session_state.messages.append(
+        {"role": "user", "content": f"↩️ 수정 요청: {request_text}"})
+
+    # 2. 피드백을 반영해 재작성 실행
+    with st.spinner("수정 요청을 반영해 다시 작성하는 중... ✍️"):
+        snap = reject(thread_id, feedback)
+
+    # 3. 새 결과를 AI 답변으로 추가
+    st.session_state.thread_id = snap["thread_id"]
+    st.session_state.snap = snap
+    score = snap.get("review", {}).get("score", "-")
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": (f"수정 요청을 반영해 다시 작성했어요! ✍️<br>"
+                    f"📰 <b>{draft_title(snap['draft'])}</b> · 검수 {score}점<br>"
+                    "왼쪽 메뉴 '생성 결과'에서 확인 후 승인/반려해 주세요."),
+    })
+
+    # 4. 채팅 화면으로 이동 (위젯 생성 전에 적용되도록 'goto'만 예약)
+    st.session_state.goto = "📝 사용자 입력"
+    st.rerun()
+
+
 # ==========================================================================
 # 6) 화면(페이지) — 생성 결과 + 승인/반려
 # ==========================================================================
@@ -318,8 +346,8 @@ def page_result():
             st.rerun()
 
         if c2.button("↩️ 반려 → 재작성", use_container_width=True):
-            st.session_state.snap = reject(st.session_state.thread_id, feedback.strip())
-            st.rerun()
+            # 수정 요청 문구를 채팅창으로 가져가 재작성합니다.
+            handle_reject_to_chat(st.session_state.thread_id, feedback.strip())
 
     elif snap["status"] == "sent":
         st.success("✅ 발송 완료!")
@@ -336,7 +364,16 @@ PAGES = {
 
 
 def render_sidebar() -> str:
-    """왼쪽 메뉴를 그리고, 사용자가 고른 페이지 이름을 돌려줍니다."""
+    """왼쪽 메뉴를 그리고, 사용자가 고른 페이지 이름을 돌려줍니다.
+
+    key="menu" 로 선택값을 묶어 두어, handle_reject_to_chat() 처럼 코드에서
+    '이동 예약(goto)'을 남기면 위젯 생성 '전에' 반영되어 페이지가 전환됩니다.
+    """
+    # 라디오 위젯을 만들기 전에만 menu 값을 바꿀 수 있습니다.
+    pending = st.session_state.pop("goto", None)
+    if pending in PAGES:
+        st.session_state.menu = pending
+
     with st.sidebar:
         st.markdown("### 📰 뉴스레터 에이전트")
         st.session_state.max_rev = st.number_input(
@@ -344,7 +381,7 @@ def render_sidebar() -> str:
             value=st.session_state.max_rev,
             help="검수에서 품질 미달 시 작성 단계로 되돌아가는 최대 횟수",
         )
-        choice = st.radio("메뉴", list(PAGES.keys()))
+        choice = st.radio("메뉴", list(PAGES.keys()), key="menu")
     return choice
 
 
