@@ -18,6 +18,7 @@ import streamlit as st
 
 from app.llm import ask_ai       # LLM 호출 도우미 (키워드 추출에 사용)
 from app.graph import graph      # 실제 일을 하는 AI 그래프(백엔드)
+from app.categories import get_flat_categories, keywords_for_labels  # 관심 카테고리
 
 
 # ==========================================================================
@@ -343,12 +344,25 @@ def page_input():
         st.session_state.pending = None
         st.rerun()   # '작성중' 카드를 결과 카드로 교체
 
-    # (2) 입력 폼 — 전송 버튼을 누르면 submitted 가 True 가 됩니다.
+    # (2) 관심 카테고리로 빠르게 만들기 — 고르고 버튼을 누르면 '생성요청 코멘트'가 자동으로 채팅에 올라갑니다.
+    with st.expander("📂 관심 카테고리로 만들기", expanded=False):
+        catalog = get_flat_categories()                  # DB(interest_category) 우선, 없으면 코드 카탈로그
+        labels = st.multiselect(
+            "카테고리 선택 (여러 개 가능)",
+            options=[row["label"] for row in catalog],
+            key="cat_select",
+            placeholder="예: AI/기술 > 생성형 AI",
+        )
+        if st.button("선택한 카테고리로 생성", disabled=not labels, use_container_width=True):
+            handle_category_submit(labels, catalog)
+            st.rerun()
+
+    # (3) 직접 입력 폼 — 전송 버튼을 누르면 submitted 가 True 가 됩니다.
     with st.form("chat_form", clear_on_submit=True):
         prompt = st.text_input("메시지", placeholder="예: 전기차랑 배터리 소식 정리해줘")
         submitted = st.form_submit_button("전송")
 
-    # (3) 전송됐고 내용이 있으면 → AI 실행
+    # (4) 전송됐고 내용이 있으면 → AI 실행
     if submitted and prompt.strip():
         handle_submit(prompt.strip())
         st.rerun()   # 화면을 새로 그려 방금 대화를 반영
@@ -392,6 +406,23 @@ def handle_submit(prompt: str):
 
     # 3. 실제 생성은 '다음 rerun'에서 실행합니다. (여기서 바로 돌리면 '작성중' 화면을 못 보여 줌)
     #    pending 만 예약해 두면, page_input() 이 '작성중' 카드를 먼저 그린 뒤 생성을 실행합니다.
+    st.session_state.pending = {"keywords": keywords}
+
+
+def handle_category_submit(labels: list[str], catalog: list[dict]):
+    """선택한 카테고리로 '생성요청 코멘트'를 자동 작성해 채팅에 올리고 생성을 예약합니다.
+
+    카테고리는 키워드가 이미 정해져 있으므로 extract_keywords(추출) 없이 바로 씁니다.
+    """
+    keywords = keywords_for_labels(labels, catalog)
+    if not keywords:
+        return
+
+    # 자동 생성된 요청 코멘트 (사용자가 직접 친 것처럼 채팅에 올라갑니다)
+    comment = f"[{', '.join(labels)}] 관련 최신 소식으로 뉴스레터 만들어줘"
+    st.session_state.messages.append({"role": "user", "content": comment})
+
+    # 작성중 화면 → 생성 → 결과 (직접 입력과 동일한 흐름)
     st.session_state.pending = {"keywords": keywords}
 
 
