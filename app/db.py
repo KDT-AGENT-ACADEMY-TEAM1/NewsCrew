@@ -204,13 +204,11 @@ def init_db() -> None:
     DB가 꺼져 있거나 권한이 없어도 앱이 죽지 않도록 예외를 삼킵니다(best-effort).
     """
     try:
-        _create_tables_if_missing()
+        _create_tables_if_missing()    # schema.sql 의 모든 CREATE TABLE 실행
         _ensure_newsletter_columns()   # 기존 DB 호환: 빠진 컬럼 보강
-        _seed_default_categories()
-        _create_setting_table()        # 환경설정 테이블
+        _seed_default_categories()     # 기본 카테고리
         _seed_settings()               # 환경설정 기본값
-        _create_newsletter_type_table()  # 뉴스레터 생성 타입 테이블
-        _seed_newsletter_types()         # 생성 타입 기본값
+        _seed_newsletter_types()       # 생성 타입 기본값
     except Exception as e:
         print(f"[DB] 초기화 건너뜀(연결/권한 확인): {e}")
 
@@ -280,26 +278,6 @@ DEFAULT_SETTINGS = [
 ]
 
 
-def _create_setting_table() -> None:
-    """환경설정 테이블(app_setting)을 만듭니다. (IF NOT EXISTS 라 여러 번 호출해도 안전)"""
-    with connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "CREATE TABLE IF NOT EXISTS app_setting ("
-                "  setting_key   VARCHAR(50)  NOT NULL COMMENT '설정 키',"
-                "  setting_value VARCHAR(255) NULL     COMMENT '설정 값(문자열로 저장)',"
-                "  value_type    VARCHAR(20)  NOT NULL DEFAULT 'str' COMMENT '값 타입(int/bool/str)',"
-                "  label         VARCHAR(100) NULL     COMMENT '화면 표시명',"
-                "  description   VARCHAR(500) NULL     COMMENT '설명',"
-                "  sort_order    INT          NOT NULL DEFAULT 0     COMMENT '정렬 순서',"
-                "  updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP "
-                "                ON UPDATE CURRENT_TIMESTAMP COMMENT '수정일시',"
-                "  PRIMARY KEY (setting_key)"
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci "
-                "COMMENT='뉴스레터 자동작성 환경설정'"
-            )
-
-
 def _seed_settings() -> None:
     """기본 환경설정 중 '키가 아직 없는 것'만 넣습니다. (이미 있으면 건드리지 않음)"""
     existing = {r["setting_key"] for r in fetch_all("SELECT setting_key FROM app_setting")}
@@ -365,28 +343,6 @@ DEFAULT_NEWSLETTER_TYPES = [
     {"code": "practical", "name": "실무요약형",
      "desc": "실무에 바로 활용할 수 있게 정리하는 스타일"},
 ]
-
-
-def _create_newsletter_type_table() -> None:
-    """뉴스레터 생성 타입 테이블(newsletter_type)을 만듭니다. (IF NOT EXISTS)"""
-    with connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "CREATE TABLE IF NOT EXISTS newsletter_type ("
-                "  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '타입 ID',"
-                "  code        VARCHAR(50)  NOT NULL COMMENT '타입 코드(영문 슬러그)',"
-                "  name        VARCHAR(100) NOT NULL COMMENT '타입 표시명(예: 요약형)',"
-                "  description VARCHAR(500) NULL     COMMENT '작성 스타일 설명',"
-                "  is_active   TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '사용 여부(1:활성,0:비활성)',"
-                "  sort_order  INT          NOT NULL DEFAULT 0 COMMENT '정렬 순서',"
-                "  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '생성일시',"
-                "  updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP "
-                "              ON UPDATE CURRENT_TIMESTAMP COMMENT '수정일시',"
-                "  PRIMARY KEY (id),"
-                "  UNIQUE KEY uk_newsletter_type_code (code)"
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci "
-                "COMMENT='뉴스레터 생성 타입'"
-            )
 
 
 def _seed_newsletter_types() -> None:
