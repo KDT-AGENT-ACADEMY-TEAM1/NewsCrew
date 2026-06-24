@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 search_web = TavilySearch(
         tavily_api_key="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",
-        max_results=1,
+        max_results=5,
         topic="news",
         include_answer=True,
         include_raw_content=False,
@@ -26,17 +26,23 @@ search_web = TavilySearch(
 def search_news(topic: str) -> str:
     """키워드로 최신 뉴스/동향을 검색해 핵심 내용을 돌려줍니다."""
     print(f"\n[Tool 가동] search_news -> {topic}")
-    load_dotenv()
+   
     result_news = search_web.invoke(topic)
     #dict_keys(['query', 'follow_up_questions', 'answer', 'images', 'results', 'response_time', 'request_id'])
      
     if not result_news['answer'] or len(result_news['results']) < 1:
         return f"'{topic}'의 뉴스 정보를 찾을 수 없습니다."
-    
-    print(result_news['results'])
-    return (
-        f"'{topic}' 관련 최신 동향(검색 결과 예시):\n"
-        f"- 시장이 빠르게 성장하며 투자가 늘고 있습니다.\n"
-        f"- 신규 기술·서비스 출시가 이어지고 있습니다.\n"
-        f"- 정책/규제 논의도 활발해지는 추세입니다."
-    )
+    # 결과 요약
+
+    summary = f"'{topic}' 관련 최신 뉴스 요약:\n\n"
+    for i, result in enumerate(result_news['results'][:3], 1):
+        title = result.get('title', '제목 없음')
+        content = result.get('content', '내용 없음')
+        url = result.get('url', '')
+        
+        summary += f"{i}. {title}\n"
+        summary += f"   {content[:100]}...\n"
+        summary += f"   {url}\n\n"
+   
+    return summary
+  
