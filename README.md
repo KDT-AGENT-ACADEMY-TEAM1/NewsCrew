@@ -10,4 +10,10 @@
 # 2. web streamlit
 # (ml_env) PS D:\프로젝트\NewsCrew> streamlit run web/streamlit_app.py --server.port 8501
 
-
+# SMTP 설정
+# SMTP_HOST=smtp.gmail.com
+# SMTP_PORT=587
+# SMTP_USER=hiran@sjcu.ac.kr
+# SMTP_PASSWORD=htcm cgwb veow vajo
+# SMTP_FROM=hiran@sjcu.ac.kr
+# SMTP_TLS=1

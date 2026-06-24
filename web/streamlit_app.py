@@ -138,7 +138,7 @@ def draft_title(draft: str) -> str:
 
 STATUS_LABELS = {
     "researching": "리서치중", "writing": "작성중", "reviewing": "검수중",
-    "awaiting_approval": "승인대기", "sent": "발송완료",
+    "awaiting_approval": "승인대기", "sent": "메일 발송완료",
 }
 
 
@@ -392,7 +392,7 @@ def _result_list():
             c = st.columns(widths, vertical_alignment="center")
             created = str(r["created_at"])[:16]
             category = r.get("category") or "직접입력"
-            news_type = r.get("news_type") or "-"
+            news_type = r.get("type_label") or r.get("news_type") or "-"
             excerpt = draft_excerpt(r.get("draft") or "", 50) or "-"
             score = r.get("review_score")
             score_txt = score if score is not None else "–"
@@ -442,9 +442,11 @@ def _result_detail(thread_id: str):
     st.session_state.thread_id = thread_id
     st.session_state.snap = snap
 
+    type_label = snap.get("type_label")
+    type_html = (f" · 타입: <b>{type_label}</b>" if type_label else "")
     st.markdown(
         f"상태: {status_badge(snap.get('status'))} "
-        f"<span style='color:#8a93a6;'>· 재작성 {snap.get('revision_count', 0)}회</span>",
+        f"<span style='color:#8a93a6;'>· 재작성 {snap.get('revision_count', 0)}회{type_html}</span>",
         unsafe_allow_html=True,
     )
     st.markdown(md_to_html(snap.get("draft", "")), unsafe_allow_html=True)
@@ -488,7 +490,8 @@ def _result_detail(thread_id: str):
         if suggested_fix and suggested_fix != "없음":
             st.warning(f"**🛠️ AI 작성자를 위한 피드백 및 행동 지침:**  \n{suggested_fix}")
 
-    if snap.get("_live") and snap.get("awaiting_approval") and snap["status"] != "sent":
+    # 발송 전(sent 아님)이면 세션과 무관하게 승인/반려 가능
+    if snap["status"] != "sent":
         feedback = st.text_input("반려 시 수정 요청(선택)", placeholder="예: 더 짧고 캐주얼하게")
         c1, c2 = st.columns(2)
         if c1.button("✅ 승인 → 발송", use_container_width=True):
@@ -499,10 +502,17 @@ def _result_detail(thread_id: str):
             st.rerun()
         if c2.button("↩️ 반려 → 재작성", use_container_width=True):
             handle_reject_to_chat(thread_id, feedback.strip())
-    elif snap.get("status") == "sent":
-        st.success("✅ 발송 완료!")
-    elif not snap.get("_live"):
-        st.caption("ℹ️ 이전 세션에서 생성된 보고서라 읽기 전용입니다. (승인/반려는 이번 세션에서 만든 보고서만 가능)")
+    else:
+        st.success("✅ 메일 발송 완료!")
+        # 누구에게 언제 보냈는지 발송 내역 표시
+        sends = snap.get("sends") or []
+        if sends:
+            st.markdown(f"**📬 발송 내역** · 총 {len(sends)}명")
+            for s in sends:
+                nm = f" ({s['name']})" if s.get("name") else ""
+                st.write(f"- {s['email']}{nm} · {s['sent_at']}")
+        else:
+            st.caption("이 카테고리에 관심 있는 구독자가 없어 발송 대상이 없었습니다.")
 
 
 # ==========================================================================

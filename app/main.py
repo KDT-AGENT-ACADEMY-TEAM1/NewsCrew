@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Optional
 
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 
 from . import categories as cat
 from . import db
+from . import mailer
 from . import subscribers as sub
 from .graph import graph
 from .keywords import extract_keywords
@@ -41,6 +43,18 @@ def _read_state(thread_id: str) -> dict:
         "revision_count": v.get("revision_count", 0),
         "awaiting_approval": "send" in state.next,
     }
+
+
+def _sends(thread_id: str) -> list[dict]:
+    """발송 이력(누구에게·언제)을 조회합니다."""
+    rows = db.fetch_all(
+        "SELECT email, name, sent_at FROM newsletter_send "
+        "WHERE thread_id = %s ORDER BY id",
+        (thread_id,),
+    )
+    for r in rows:
+        r["sent_at"] = str(r["sent_at"])
+    return rows
 
 
 # ==========================================================================
@@ -177,9 +191,10 @@ class RejectIn(BaseModel):
 def api_newsletters_list(category_id: Optional[int] = None):
     sql = (
         "SELECT n.thread_id, n.title, n.draft, n.status, n.review_score, n.created_at, "
-        "       n.news_type, c.name AS category "
+        "       n.news_type, c.name AS category, COALESCE(nt.name, n.news_type) AS type_label "
         "FROM newsletter n "
-        "LEFT JOIN interest_category c ON c.id = n.category_id "
+        "LEFT JOIN interest_category c  ON c.id = n.category_id "
+        "LEFT JOIN newsletter_type nt   ON nt.code = n.news_type "
     )
     if category_id is not None:
         rows = db.fetch_all(sql + "WHERE n.category_id = %s ORDER BY n.created_at DESC, n.id DESC",
@@ -193,14 +208,19 @@ def api_newsletters_list(category_id: Optional[int] = None):
 
 @app.get("/newsletters/{thread_id}")
 def api_newsletters_get(thread_id: str):
-    """상세: 이번 세션 그래프에 살아 있으면 그 상태(승인/반려 가능), 없으면 DB(읽기전용)."""
+    """상세: 그래프에 살아 있으면 그 상태, 없으면 DB. 둘 다 발송 전이면 승인/반려 가능."""
     state = graph.get_state(_config(thread_id))
     if state.values:
         snap = _read_state(thread_id)
         snap["_live"] = True
+        code = state.values.get("type_code")
+        snap["news_type"] = code
+        snap["type_label"] = db.get_type_name(code)
+        snap["sends"] = _sends(thread_id)
         return snap
     row = db.fetch_one(
-        "SELECT thread_id, title, draft, status, review_score, review_feedback, revision_count "
+        "SELECT thread_id, title, draft, status, review_score, review_feedback, "
+        "       revision_count, news_type "
         "FROM newsletter WHERE thread_id = %s",
         (thread_id,),
     )
@@ -212,8 +232,12 @@ def api_newsletters_get(thread_id: str):
         "draft": row["draft"] or "",
         "review": {"score": row["review_score"], "feedback": row["review_feedback"]},
         "revision_count": row["revision_count"] or 0,
-        "awaiting_approval": False,
+        "news_type": row["news_type"],
+        "type_label": db.get_type_name(row["news_type"]),
+        # 발송 전(sent 아님)이면 세션과 무관하게 승인/반려 가능
+        "awaiting_approval": row["status"] != "sent",
         "_live": False,
+        "sends": _sends(thread_id),
     }
 
 
@@ -234,17 +258,58 @@ def api_newsletters_generate(b: GenerateIn):
 
 @app.post("/newsletters/{thread_id}/approve")
 def api_newsletters_approve(thread_id: str):
-    graph.invoke(None, _config(thread_id))       # 멈춘 지점부터 재개 → 발송
-    return _read_state(thread_id)
+    """승인 → 발송. 그래프가 살아 있으면 재개하고, DB 상태를 발송완료로 동기화한 뒤
+    그 카테고리에 관심 있는 구독자에게 메일을 보냅니다(이력 기록)."""
+    cfg = _config(thread_id)
+    state = graph.get_state(cfg)
+    if state.values and "send" in state.next:
+        graph.invoke(None, cfg)                  # 그래프 발송 단계 실행
+
+    # DB 상태를 발송완료로 동기화 (live/old 공통)
+    n = db.execute("UPDATE newsletter SET status = 'sent', final_body = draft "
+                   "WHERE thread_id = %s", (thread_id,))
+    if not n:
+        raise HTTPException(404, "보고서를 찾을 수 없습니다.")
+
+    # 카테고리 관심 구독자에게 메일 발송 + 발송 이력 기록
+    row = db.fetch_one("SELECT category_id, title, draft FROM newsletter WHERE thread_id = %s",
+                       (thread_id,))
+    mailer.send_newsletter(thread_id, row["category_id"],
+                           row["title"] or "뉴스레터", row["draft"] or "")
+    return api_newsletters_get(thread_id)
 
 
 @app.post("/newsletters/{thread_id}/reject")
 def api_newsletters_reject(thread_id: str, b: RejectIn):
+    """반려 → 재작성. 살아 있으면 그래프 재개, 없으면 저장된 정보로 같은 thread_id 재생성."""
     cfg = _config(thread_id)
-    graph.update_state(cfg, {"human_feedback": b.feedback, "status": "writing"},
-                       as_node="research")
-    graph.invoke(None, cfg)
-    return _read_state(thread_id)
+    state = graph.get_state(cfg)
+    if state.values and "send" in state.next:
+        graph.update_state(cfg, {"human_feedback": b.feedback, "status": "writing"},
+                           as_node="research")
+        graph.invoke(None, cfg)
+        return api_newsletters_get(thread_id)
+
+    # 과거 보고서: DB에 저장된 키워드/카테고리/타입으로 다시 생성 (피드백 반영)
+    row = db.fetch_one(
+        "SELECT keywords, category_id, news_type FROM newsletter WHERE thread_id = %s",
+        (thread_id,),
+    )
+    if not row:
+        raise HTTPException(404, "보고서를 찾을 수 없습니다.")
+    try:
+        keywords = json.loads(row["keywords"]) if row["keywords"] else []
+    except (ValueError, TypeError):
+        keywords = []
+    initial = {"keywords": keywords, "revision_count": 0,
+               "max_revisions": db.get_int_setting("max_revisions", 2),
+               "status": "researching", "human_feedback": b.feedback}
+    if row["category_id"]:
+        initial["category_id"] = row["category_id"]
+    if row["news_type"]:
+        initial["type_code"] = row["news_type"]
+    graph.invoke(initial, cfg)
+    return api_newsletters_get(thread_id)
 
 
 @app.delete("/newsletters/{thread_id}")
