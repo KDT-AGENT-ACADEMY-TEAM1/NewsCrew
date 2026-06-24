@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 
+#테스트2
 
 @tool
 def search_stock(symbol: str) -> str:
