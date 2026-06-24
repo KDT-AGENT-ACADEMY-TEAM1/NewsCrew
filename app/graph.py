@@ -20,7 +20,7 @@ from __future__ import annotations
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from .agents import (
+from .nodes import (
     research_node,
     review_node,
     route_after_research,
