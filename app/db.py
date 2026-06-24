@@ -112,89 +112,86 @@ def ping() -> bool:
 # 카테고리가 하나도 없을 때 넣어 줄 기본 분야들 (interest_category)
 DEFAULT_CATEGORIES = [
     {
-        "code": "ai",
-        "name": "AI/생성형AI",
-        "keywords": [
-            "ChatGPT", "Claude", "Gemini", "OpenAI", "Anthropic",
-            "생성형 AI", "LLM", "AI 에이전트", "LangChain",
-            "LangGraph", "RAG", "MCP"
-        ]
+        "code": "tech", "name": "IT/AI 분야",
+        "keywords": ["인공지능(AI)", "생성형 AI", "머신러닝/딥러닝", "데이터사이언스",
+                     "클라우드", "개발자 기술", "오픈소스", "사이버보안", "로봇", "반도체"],
+        "checkpoints": ["기술의 핵심 개념과 변화 지점을 쉽게 설명했는가",
+                        "실제 적용 사례나 제품을 제시했는가",
+                        "전문 용어를 풀어 설명했는가",
+                        "산업·일상에 미칠 영향을 짚었는가"],
     },
     {
-        "code": "tech",
-        "name": "IT/기술",
-        "keywords": [
-            "클라우드", "개발자 기술", "오픈소스", "사이버보안",
-            "데이터사이언스", "머신러닝", "딥러닝", "반도체",
-            "로봇", "디지털전환"
-        ]
+        "code": "ai", "name": "AI/생성형AI",
+        "keywords": ["ChatGPT", "Claude", "Gemini", "OpenAI", "Anthropic", "생성형 AI",
+                     "LLM", "AI 에이전트", "LangChain", "LangGraph", "RAG", "MCP"],
+        "checkpoints": ["어떤 모델·도구인지 명확히 했는가",
+                        "구체적 활용 사례나 데모를 담았는가",
+                        "한계·주의점도 균형 있게 다뤘는가",
+                        "독자가 바로 시도할 포인트가 있는가"],
     },
     {
-        "code": "economy",
-        "name": "경제/금융",
-        "keywords": [
-            "증시", "금리", "환율", "부동산",
-            "금융", "재테크", "경제정책", "가상자산"
-        ]
+        "code": "economy", "name": "경제/금융",
+        "keywords": ["증시", "금리", "부동산"],
+        "checkpoints": ["수치·지표로 근거를 제시했는가",
+                        "원인과 전망을 함께 설명했는가",
+                        "투자·생활 관점의 시사점이 있는가"],
     },
     {
-        "code": "startup",
-        "name": "스타트업/비즈니스",
-        "keywords": [
-            "스타트업", "벤처투자", "기업전략",
-            "마케팅", "브랜딩", "경영", "창업"
-        ]
+        "code": "mobility", "name": "모빌리티",
+        "keywords": ["전기차", "배터리", "자율주행"],
+        "checkpoints": ["기술·제품의 차별점을 설명했는가",
+                        "시장·정책 동향을 짚었는가",
+                        "상용화 시점이나 한계를 언급했는가"],
     },
     {
-        "code": "education",
-        "name": "교육/에듀테크",
-        "keywords": [
-            "교육정책", "에듀테크", "온라인교육",
-            "AI교육", "고등교육", "대학", "학습분석"
-        ]
+        "code": "science", "name": "과학",
+        "keywords": ["우주", "에너지", "바이오"],
+        "checkpoints": ["연구의 의미를 쉽게 풀었는가",
+                        "실생활·산업 응용 가능성을 제시했는가",
+                        "과장 없이 사실에 근거했는가"],
     },
     {
-        "code": "research",
-        "name": "연구/학술",
-        "keywords": [
-            "논문", "학술연구", "연구성과",
-            "연구비", "SCI", "학회", "연구윤리"
-        ]
+        "code": "startup", "name": "스타트업/비즈니스",
+        "keywords": ["스타트업", "벤처투자", "기업전략", "마케팅", "브랜딩", "경영", "창업"],
+        "checkpoints": ["비즈니스 모델·시장 기회를 설명했는가",
+                        "투자·성장 지표를 제시했는가",
+                        "실행 가능한 인사이트가 있는가"],
     },
     {
-        "code": "mobility",
-        "name": "모빌리티",
-        "keywords": [
-            "전기차", "배터리", "자율주행",
-            "항공", "드론", "UAM", "스마트모빌리티"
-        ]
+        "code": "education", "name": "교육/에듀테크",
+        "keywords": ["교육정책", "에듀테크", "온라인교육", "AI교육", "고등교육", "대학", "학습분석"],
+        "checkpoints": ["정책·기술이 교육 현장에 주는 변화를 설명했는가",
+                        "교수·학생 등 대상별 시사점이 있는가",
+                        "사례나 데이터를 제시했는가"],
     },
     {
-        "code": "healthcare",
-        "name": "헬스케어/바이오",
-        "keywords": [
-            "헬스케어", "바이오", "의료AI",
-            "제약", "유전체", "디지털헬스"
-        ]
+        "code": "research", "name": "연구/학술",
+        "keywords": ["논문", "학술연구", "연구성과", "연구비", "SCI", "학회", "연구윤리"],
+        "checkpoints": ["연구 성과의 핵심을 정확히 전달했는가",
+                        "방법·한계를 균형 있게 다뤘는가",
+                        "후속 연구·활용 방향을 제시했는가"],
     },
     {
-        "code": "government",
-        "name": "정부/공공",
-        "keywords": [
-            "정부정책", "공공데이터",
-            "디지털플랫폼정부", "행정혁신",
-            "법률", "규제"
-        ]
+        "code": "healthcare", "name": "헬스케어/바이오",
+        "keywords": ["헬스케어", "바이오", "의료AI", "제약", "유전체", "디지털헬스"],
+        "checkpoints": ["의학적 근거를 정확히 전달했는가",
+                        "환자·일반인 관점의 유의점을 담았는가",
+                        "과장·오해 소지를 피했는가"],
     },
     {
-        "code": "global",
-        "name": "글로벌 동향",
-        "keywords": [
-            "미국", "중국", "일본", "유럽",
-            "글로벌 경제", "해외 기술동향",
-            "국제정세"
-        ]
-    }
+        "code": "government", "name": "정부/공공",
+        "keywords": ["정부정책", "공공데이터", "디지털플랫폼정부", "행정혁신", "법률", "규제"],
+        "checkpoints": ["정책의 핵심과 적용 대상을 명확히 했는가",
+                        "시행 시기·영향을 설명했는가",
+                        "쟁점을 균형 있게 다뤘는가"],
+    },
+    {
+        "code": "global", "name": "글로벌 동향",
+        "keywords": ["미국", "중국", "일본", "유럽", "글로벌 경제", "해외 기술동향", "국제정세"],
+        "checkpoints": ["국가별 동향을 비교·정리했는가",
+                        "국내에 미칠 영향을 짚었는가",
+                        "출처·맥락을 제시했는가"],
+    },
 ]
 
 
@@ -227,39 +224,53 @@ def _create_tables_if_missing() -> None:
                 cur.execute(stmt)
 
 
-def _ensure_newsletter_columns() -> None:
-    """기존 DB 호환: newsletter 에 news_type 컬럼이 없으면 추가합니다."""
+def _column_missing(table: str, column: str) -> bool:
+    """해당 테이블에 컬럼이 없으면 True."""
     row = fetch_one(
         "SELECT COUNT(*) AS n FROM information_schema.columns "
-        "WHERE table_schema = DATABASE() "
-        "  AND table_name = 'newsletter' AND column_name = 'news_type'"
+        "WHERE table_schema = DATABASE() AND table_name = %s AND column_name = %s",
+        (table, column),
     )
-    if row and row.get("n", 0) == 0:
-        execute(
-            "ALTER TABLE newsletter "
-            "ADD COLUMN news_type VARCHAR(100) NULL COMMENT '생성 타입명' AFTER category_id"
-        )
+    return bool(row) and row.get("n", 0) == 0
+
+
+def _ensure_newsletter_columns() -> None:
+    """기존 DB 호환: 빠진 컬럼을 보강합니다."""
+    if _column_missing("newsletter", "news_type"):
+        execute("ALTER TABLE newsletter "
+                "ADD COLUMN news_type VARCHAR(100) NULL COMMENT '생성 타입명' AFTER category_id")
         print("[DB] newsletter.news_type 컬럼을 추가했습니다.")
+    if _column_missing("interest_category", "checkpoints"):
+        execute("ALTER TABLE interest_category "
+                "ADD COLUMN checkpoints JSON NULL COMMENT '검수용 주요 체크포인트' AFTER keywords")
+        print("[DB] interest_category.checkpoints 컬럼을 추가했습니다.")
 
 
 def _seed_default_categories() -> None:
-    """기본 카테고리 중 '코드가 아직 없는 것'만 골라 넣습니다. (이미 있으면 건드리지 않음)"""
+    """기본 카테고리를 DEFAULT_CATEGORIES 기준으로 다시 맞춥니다.
+
+    코드(code)를 기준으로 '있으면 이름/키워드/체크포인트를 갱신, 없으면 추가'(upsert)합니다.
+    → 모든 카테고리가 최신 키워드 + 체크포인트를 갖게 됩니다.
+    (행을 통째로 지우지 않고 갱신하므로 id 가 유지되어 구독자·보고서 연결이 끊기지 않습니다)
+    """
     import json
 
-    existing = {r["code"] for r in fetch_all("SELECT code FROM interest_category")}
-    added = []
     for order, cat in enumerate(DEFAULT_CATEGORIES):
-        if cat["code"] in existing:
-            continue   # 같은 코드가 이미 있으면 중복 추가 안 함
         execute(
-            "INSERT INTO interest_category (code, name, keywords, sort_order) "
-            "VALUES (%s, %s, %s, %s)",
-            (cat["code"], cat["name"],
-             json.dumps(cat["keywords"], ensure_ascii=False), order),
+            "INSERT INTO interest_category (code, name, keywords, checkpoints, sort_order) "
+            "VALUES (%s, %s, %s, %s, %s) "
+            "ON DUPLICATE KEY UPDATE "
+            "  name = VALUES(name), keywords = VALUES(keywords), "
+            "  checkpoints = VALUES(checkpoints), sort_order = VALUES(sort_order)",
+            (
+                cat["code"],
+                cat["name"],
+                json.dumps(cat["keywords"], ensure_ascii=False),
+                json.dumps(cat.get("checkpoints", []), ensure_ascii=False),
+                order,
+            ),
         )
-        added.append(cat["name"])
-    if added:
-        print(f"[DB] 기본 카테고리 추가: {', '.join(added)}")
+    print(f"[DB] 기본 카테고리 {len(DEFAULT_CATEGORIES)}개 동기화 완료(체크포인트 포함)")
 
 
 # --------------------------------------------------------------------------

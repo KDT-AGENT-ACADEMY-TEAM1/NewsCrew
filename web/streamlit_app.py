@@ -381,8 +381,9 @@ def _result_list():
     st.caption(f"총 {len(rows)}건 · '상세보기'로 본문 확인 및 승인/반려할 수 있어요.")
 
     with st.container(key="resulttbl"):
-        widths = [1.6, 1.6, 1.3, 3.0, 1.2, 0.7, 1.2, 0.7]
+        widths = [1.5, 1.4, 1.2, 2.3, 1.8, 0.6, 1.1, 0.6]
         headers = ["작성일", "관심영역", "타입", "메일내용", "상태", "점수", "관리", ""]
+        status_codes = list(STATUS_LABELS.keys())
         head = st.columns(widths, vertical_alignment="center")
         for col, title in zip(head, headers):
             col.markdown(f"<div class='rhead'>{title}</div>", unsafe_allow_html=True)
@@ -400,7 +401,18 @@ def _result_list():
             c[1].markdown(f"<div class='rcell'>{category}</div>", unsafe_allow_html=True)
             c[2].markdown(f"<div class='rcell'>{news_type}</div>", unsafe_allow_html=True)
             c[3].markdown(f"<div class='rcell'>{excerpt}</div>", unsafe_allow_html=True)
-            c[4].markdown(f"<div class='rcell'>{status_badge(r['status'])}</div>", unsafe_allow_html=True)
+            # 상태: 선택박스로 바로 수정 (변경 시 API로 저장)
+            cur_status = r["status"] if r["status"] in status_codes else status_codes[0]
+            new_status = c[4].selectbox(
+                "상태", status_codes, index=status_codes.index(cur_status),
+                format_func=status_label, key=f"st_{r['thread_id']}",
+                label_visibility="collapsed")
+            if new_status != cur_status:
+                try:
+                    api.update_status(r["thread_id"], new_status)
+                except Exception as e:
+                    st.error(f"상태 변경 실패: {e}")
+                st.rerun()
             c[5].markdown(f"<div class='rcell muted'>{score_txt}</div>", unsafe_allow_html=True)
             if c[6].button("상세보기", key=f"view_{r['thread_id']}", use_container_width=True):
                 st.session_state.view_report = r["thread_id"]
@@ -555,6 +567,16 @@ def _parse_keywords_input(text: str) -> list[str]:
     return keywords
 
 
+def _parse_lines_input(text: str) -> list[str]:
+    """줄 단위 입력(체크포인트)을 리스트로. (빈 줄/중복 제거)"""
+    out: list[str] = []
+    for line in (text or "").split("\n"):
+        s = line.strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
 def page_categories():
     st.markdown("## 🗂️ 카테고리 등록")
     st.caption("뉴스레터 관심분야를 추가/삭제합니다.")
@@ -574,6 +596,10 @@ def page_categories():
         name = col1.text_input("분야 표시명 *", placeholder="예: AI/기술")
         code = col2.text_input("분야 코드 * (영문 슬러그)", placeholder="예: ai_tech")
         keywords_text = st.text_input("키워드 (쉼표로 구분)", placeholder="예: LLM, AI 에이전트, 반도체")
+        checkpoints_text = st.text_area(
+            "주요 체크포인트 (한 줄에 하나 — 검수 시 주제별 체크에 사용)",
+            placeholder="예:\n핵심 개념을 쉽게 설명했는가\n실제 사례를 제시했는가",
+            height=90)
         col3, col4 = st.columns(2)
         parent_label = col3.selectbox("상위 분야", list(parent_options.keys()))
         sort_order = col4.number_input("정렬 순서", min_value=0, value=0, step=1)
@@ -587,7 +613,8 @@ def page_categories():
                 api.create_category(code=code.strip(), name=name.strip(),
                                     keywords=_parse_keywords_input(keywords_text),
                                     parent_id=parent_options[parent_label],
-                                    sort_order=int(sort_order))
+                                    sort_order=int(sort_order),
+                                    checkpoints=_parse_lines_input(checkpoints_text))
                 st.success(f"'{name.strip()}' 카테고리를 추가했습니다!")
                 st.rerun()
             except Exception as e:
@@ -604,15 +631,28 @@ def page_categories():
         c1, c2 = st.columns([6, 1])
         parent = f" · 상위: {c['parent_name']}" if c.get("parent_name") else ""
         kw = ", ".join(c["keywords"]) if c["keywords"] else "-"
+        cps = c.get("checkpoints") or []
         active = "" if c["is_active"] else " · ⛔비활성"
         c1.markdown(
             f"**{c['name']}** `{c['code']}`{parent}{active}<br>"
-            f"<span style='color:#9ab;'>키워드: {kw}</span>",
+            f"<span style='color:#9ab;'>키워드: {kw}</span><br>"
+            f"<span style='color:#9ab;'>체크포인트: {('· ' + ' · '.join(cps)) if cps else '-'}</span>",
             unsafe_allow_html=True,
         )
         if c2.button("🗑️", key=f"delcat_{c['id']}", help="삭제"):
             api.delete_category(c["id"])
             st.rerun()
+        # 체크포인트 편집
+        with c1.expander("✏️ 체크포인트 편집"):
+            edited = st.text_area("한 줄에 하나", value="\n".join(cps),
+                                  key=f"cp_{c['id']}", height=110)
+            if st.button("저장", key=f"cpsave_{c['id']}"):
+                try:
+                    api.update_checkpoints(c["id"], _parse_lines_input(edited))
+                    st.success("체크포인트를 저장했습니다.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
 
 
 # ==========================================================================

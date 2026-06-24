@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS interest_category (
     name            VARCHAR(100)    NOT NULL                COMMENT '분야 표시명 (예: AI/기술)',
     description     VARCHAR(500)    NULL                    COMMENT '분야 설명',
     keywords        JSON            NULL                    COMMENT '콘텐츠 수집·필터링용 키워드 배열 (예: ["LLM","에이전트"])',
+    checkpoints     JSON            NULL                    COMMENT '검수용 주요 체크포인트 배열 (LLM 주제별 체크에 사용)',
     sort_order      INT             NOT NULL DEFAULT 0       COMMENT '정렬 순서',
     is_active       TINYINT(1)      NOT NULL DEFAULT 1       COMMENT '사용 여부 (1:활성, 0:비활성)',
     created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP                          COMMENT '생성일시',
