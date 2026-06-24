@@ -55,7 +55,7 @@ def research_node(state: NewsletterState) -> NewsletterState:
 
     ## Objective (목표)
     주어진 키워드 '{topic}'와 관련된 최신 동향을 조사해야 합니다.
-    반드시 제공된 검색 도구(search_news 등)를 먼저 호출하여 최신 뉴스레터나 기사 데이터를 확보한 뒤 분석을 진행하세요.
+    반드시 제공된 검색 도구(search_news,search_stock 등)를 먼저 호출하여 최신 뉴스레터나 기사 데이터를 확보한 뒤 분석을 진행하세요.
 
     ## Instructions (지침)
     1. 정보 검색: 제공된 도구를 사용하여 정보를 검색하세요. 정보가 부족하면 도구를 여러 번 사용할 수 있습니다.
@@ -83,7 +83,11 @@ def research_node(state: NewsletterState) -> NewsletterState:
     **3. 시사점 및 향후 전망 (Implications & Outlook)**
     - 데이터 및 동향을 바탕으로 도출된 비즈니스 또는 기술적 시사점
     - 향후 예상되는 변화나 대응 방안
+    
+    **4. {topic} 관련회사 주가정보 **
+    - 3개회사정도를 선택해서 도구를 사용해서 현재 주가정보를 출력해줘
     """
+
         )
         seed = [
             SystemMessage(content=system),
