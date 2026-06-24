@@ -9,7 +9,7 @@ import json
 
 from langgraph.config import get_config
 
-from ..db import execute
+from ..db import execute, fetch_one
 from ..llm import ask_ai
 from ..state import NewsletterState
 
@@ -29,12 +29,16 @@ def write_node(state: NewsletterState) -> NewsletterState:
         "너는 뉴스레터 작성자다. 아래 리서치를 바탕으로 친근한 한국어 뉴스레터 초안을 써라. "
         "맨 위에 '# 제목' 한 줄, 본문에는 '## 소제목'을 2개 이상 넣어 마크다운으로 작성하라."
     )
-    # 생성 타입(요약형/트렌드분석형/실무요약형 …)이 지정되면 그 스타일을 반영합니다.
-    type_name = state.get("type_name")
-    if type_name:
-        type_desc = state.get("type_desc") or ""
-        system += (f" 이 뉴스레터는 '{type_name}' 스타일로 작성한다. {type_desc} "
-                   f"제목 끝에 '({type_name})'을 붙여라.")
+    # 생성 타입(type_code: summary/trend/practical …)이 지정되면 그 스타일을 반영합니다.
+    #   스타일 설명(description)은 newsletter_type 테이블에서 type_code 로 조회합니다.
+    type_code = state.get("type_code")
+
+    
+    if type_code:
+        row = fetch_one("SELECT description FROM newsletter_type WHERE code = %s", (type_code,))
+        type_desc = (row or {}).get("description") or ""
+        if type_desc:
+            system += f" 이 뉴스레터는 다음 스타일로 작성한다: {type_desc}"
     user = f"[리서치]\n{research}\n"
     if feedback:
         user += f"\n[수정 요청]\n{feedback}\n위 요청을 반드시 반영해서 다시 써 줘."
@@ -75,7 +79,7 @@ def _save_draft(state: NewsletterState, draft: str) -> None:
             (
                 thread_id,
                 state.get("category_id"),
-                state.get("type_name"),
+                state.get("type_code"),
                 title,
                 json.dumps(state.get("keywords") or [], ensure_ascii=False),
                 draft,
