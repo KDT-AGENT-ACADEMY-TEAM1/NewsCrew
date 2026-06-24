@@ -58,15 +58,17 @@ def _save_draft(state: NewsletterState, draft: str) -> None:
     try:
         execute(
             "INSERT INTO newsletter "
-            "(thread_id, title, keywords, draft, "
+            "(thread_id, category_id, title, keywords, draft, "
             " review_score, review_feedback, revision_count, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
             "ON DUPLICATE KEY UPDATE "
+            "  category_id = VALUES(category_id), "
             "  title = VALUES(title), keywords = VALUES(keywords), draft = VALUES(draft), "
             "  review_score = VALUES(review_score), review_feedback = VALUES(review_feedback), "
             "  revision_count = VALUES(revision_count), status = VALUES(status)",
             (
                 thread_id,
+                state.get("category_id"),
                 title,
                 json.dumps(state.get("keywords") or [], ensure_ascii=False),
                 draft,
