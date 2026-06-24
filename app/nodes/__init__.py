@@ -11,7 +11,7 @@ graph.py 가 이 파일을 통해 모든 노드를 한 번에 가져갑니다.
 """
 from __future__ import annotations
 
-from .research_old import research_node, route_after_research
+from .research import research_node, route_after_research
 from .review import review_node
 from .send import send_node
 from .tools import tools_node
