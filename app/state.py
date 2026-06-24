@@ -18,10 +18,12 @@ from langgraph.graph.message import add_messages
 # --------------------------------------------------------------------------
 # 검수 결과 한 덩어리 (검수 에이전트가 만들어 채웁니다)
 # --------------------------------------------------------------------------
-class ReviewResult(TypedDict):
+class ReviewResult(TypedDict, total=False):
     passed: bool      # 품질 통과 여부 (True=통과 / False=미달 → 다시 작성)
     score: int        # 0~100 점수
-    feedback: str     # 수정 요청 사유 또는 통과 코멘트
+    feedback: str     # 전체 초안에 대한 핵심 총평 (편집장 관점)
+    deduction_reasons: dict[str, str]  # 항목별 감점 사유
+    suggested_fix: str     # 수정 가이드라인
 
 
 # --------------------------------------------------------------------------
