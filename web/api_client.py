@@ -52,10 +52,15 @@ def list_categories() -> list[dict]:
     return _get("/categories")
 
 
-def create_category(code, name, keywords=None, parent_id=None, description=None, sort_order=0):
+def create_category(code, name, keywords=None, parent_id=None, description=None,
+                    sort_order=0, checkpoints=None):
     return _post("/categories", {"code": code, "name": name, "keywords": keywords or [],
                                  "parent_id": parent_id, "description": description,
-                                 "sort_order": sort_order})
+                                 "sort_order": sort_order, "checkpoints": checkpoints or []})
+
+
+def update_checkpoints(cid: int, checkpoints: list):
+    return _put(f"/categories/{cid}/checkpoints", {"checkpoints": checkpoints})
 
 
 def delete_category(cid: int):
@@ -137,6 +142,10 @@ def approve(thread_id: str) -> dict:
 
 def reject(thread_id: str, feedback: str) -> dict:
     return _post(f"/newsletters/{thread_id}/reject", {"feedback": feedback})
+
+
+def update_status(thread_id: str, status: str):
+    return _put(f"/newsletters/{thread_id}/status", {"status": status})
 
 
 def delete_newsletter(thread_id: str):
