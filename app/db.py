@@ -209,6 +209,7 @@ def init_db() -> None:
         _seed_default_categories()     # 기본 카테고리
         _seed_settings()               # 환경설정 기본값
         _seed_newsletter_types()       # 생성 타입 기본값
+        _seed_subscribers()            # 기본 구독자(메일링리스트)
     except Exception as e:
         print(f"[DB] 초기화 건너뜀(연결/권한 확인): {e}")
 
@@ -390,3 +391,40 @@ def get_type_name(code: str | None) -> str | None:
         return None
     row = fetch_one("SELECT name FROM newsletter_type WHERE code = %s", (code,))
     return (row or {}).get("name") or code
+
+
+# --------------------------------------------------------------------------
+# 기본 구독자(메일링리스트) 시드 — 이메일이 없을 때만 추가 + 관심 카테고리 연결
+#   category_code 는 interest_category.code 와 맞춰야 합니다.
+# --------------------------------------------------------------------------
+DEFAULT_SUBSCRIBERS = [
+    {"email": "lippana@naver.com",  "name": "박희순", "category_code": "ai"},
+    {"email": "zerg4572@naver.com", "name": "최인렬", "category_code": "economy"},
+    {"email": "secui0101@gmail.com", "name": "오미영", "category_code": "education"},
+    {"email": "guard884@gmail.com", "name": "김경호", "category_code": "ai"},
+]
+
+
+def _seed_subscribers() -> None:
+    """기본 구독자 중 '이메일이 아직 없는 사람'만 추가하고 관심 카테고리를 연결합니다."""
+    existing = {r["email"] for r in fetch_all("SELECT email FROM subscriber")}
+    added = []
+    for s in DEFAULT_SUBSCRIBERS:
+        if s["email"] in existing:
+            continue
+        cat = fetch_one("SELECT id FROM interest_category WHERE code = %s", (s["category_code"],))
+        cat_id = cat["id"] if cat else None
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO subscriber (email, name) VALUES (%s, %s)",
+                            (s["email"], s["name"]))
+                sub_id = cur.lastrowid
+                if cat_id:
+                    cur.execute(
+                        "INSERT INTO subscriber_interest (subscriber_id, category_id) "
+                        "VALUES (%s, %s)",
+                        (sub_id, cat_id),
+                    )
+        added.append(s["name"])
+    if added:
+        print(f"[DB] 기본 구독자 추가: {', '.join(added)}")

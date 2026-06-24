@@ -9,5 +9,3 @@
 
 # 2. web streamlit
 # (ml_env) PS D:\프로젝트\NewsCrew> streamlit run web/streamlit_app.py --server.port 8501
-
-
