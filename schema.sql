@@ -105,3 +105,43 @@ CREATE TABLE IF NOT EXISTS newsletter (
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci
   COMMENT='생성된 뉴스레터(보고서) 결과';
+
+
+-- ------------------------------------------------------------
+-- 환경설정 (뉴스레터 자동작성 관련 환경)
+--   key/value 방식. 기본값은 app/db.py 의 _seed_settings() 가 넣습니다.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS app_setting (
+    setting_key   VARCHAR(50)  NOT NULL                COMMENT '설정 키',
+    setting_value VARCHAR(255) NULL                    COMMENT '설정 값(문자열로 저장)',
+    value_type    VARCHAR(20)  NOT NULL DEFAULT 'str'  COMMENT '값 타입(int/bool/str)',
+    label         VARCHAR(100) NULL                    COMMENT '화면 표시명',
+    description   VARCHAR(500) NULL                    COMMENT '설명',
+    sort_order    INT          NOT NULL DEFAULT 0      COMMENT '정렬 순서',
+    updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '수정일시',
+    PRIMARY KEY (setting_key)
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci
+  COMMENT='뉴스레터 자동작성 환경설정';
+
+
+-- ------------------------------------------------------------
+-- 뉴스레터 생성 타입 (요약형 / 트렌드분석형 / 실무요약형 …)
+--   기본값은 app/db.py 의 _seed_newsletter_types() 가 넣습니다.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS newsletter_type (
+    id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '타입 ID',
+    code        VARCHAR(50)  NOT NULL                COMMENT '타입 코드(영문 슬러그)',
+    name        VARCHAR(100) NOT NULL                COMMENT '타입 표시명(예: 요약형)',
+    description VARCHAR(500) NULL                    COMMENT '작성 스타일 설명',
+    is_active   TINYINT(1)   NOT NULL DEFAULT 1      COMMENT '사용 여부(1:활성,0:비활성)',
+    sort_order  INT          NOT NULL DEFAULT 0      COMMENT '정렬 순서',
+    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '생성일시',
+    updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '수정일시',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_newsletter_type_code (code)
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci
+  COMMENT='뉴스레터 생성 타입';
