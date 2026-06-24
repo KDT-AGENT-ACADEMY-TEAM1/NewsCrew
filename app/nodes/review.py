@@ -1,45 +1,58 @@
-"""[노드] 검수 — 초안 품질 판정 (자동 1차 검수).
+"""[노드] 검수 — 편집장 관점의 '체크리스트 기반' 자동 AI 검수.
 
-검수 결과(점수/통과 여부)를 DB(newsletter)에 저장합니다.
+  구조 체크(규칙)  : 제목/소제목/분량/형식 → 결정적으로 점수화
+  품질 체크(LLM)   : 리드/톤앤매너/정보가치/명확성/마무리 → ask_ai 로 평가
+  → 항목별 점수를 합산(총 100점)하고, 환경설정의 '승인 기준 점수(pass_score)'로 통과 판정.
+
+검수 결과(점수/체크리스트 코멘트/상태)는 newsletter 테이블에 저장합니다.
 이 노드까지가 '그래프 한 덩어리'이고, 직후 send 직전에서 멈춰 사람 승인을 받습니다.
 """
 from __future__ import annotations
 
 import json
+
 from langgraph.config import get_config
 
+from ..categories import get_checkpoints
 from ..db import execute, get_int_setting
 from ..llm import ask_ai
 from ..state import NewsletterState, ReviewResult
 
 
+# 품질(LLM) 체크 항목: (키, 표시명, 평가 관점) — 배점은 항목 수에 맞춰 60점을 나눠 가집니다.
+QUALITATIVE_ITEMS = [
+    ("lead",    "도입부(리드)", "첫 문단이 독자의 흥미를 끌고 글의 핵심을 예고하는가"),
+    ("tone",    "톤앤매너",     "친근하면서도 전문적인 어조가 일관되는가"),
+    ("value",   "정보 가치",    "핵심 정보가 구체적이고 독자에게 유익한가(일반론만 아님)"),
+    ("clarity", "명확성·간결성", "문장이 명확하고 군더더기 없이 이해하기 쉬운가"),
+    ("closing", "마무리",       "맺음말 또는 다음 행동(관심·구독 등) 유도가 있는가"),
+]
+QUALITATIVE_TOTAL = 60   # 품질 항목 합계 점수
+
+
 # ==========================================================================
-# STEP 4. 검수 노드 — 초안 품질 판정 + 점수 저장
-#   '통과' 여부는 환경설정(app_setting)의 '승인 기준 점수(pass_score)'로 정합니다.
+# STEP 4. 검수 노드 — 체크리스트 채점 + 점수 저장
 # ==========================================================================
 def review_node(state: NewsletterState) -> NewsletterState:
     draft = state.get("draft", "")
     revision = state.get("revision_count", 0)
-    print(f"[검수] AI 품질 검증 시작 ({revision}회차)")
+    print(f"[검수] 체크리스트 AI 검수 시작 ({revision}회차)")
 
-    # 1. ask_ai() 로 LLM 검수를 수행합니다.
-    review = _llm_review(draft)
-    
-    # 2. 통과 기준 점수를 환경설정에서 읽어와 다시 판정합니다. (Passed 여부 재조정)
+    # 이 보고서의 카테고리에 등록된 '주요 체크포인트'를 가져와 주제별 체크에 사용합니다.
+    checkpoints = get_checkpoints(state.get("category_id"))
+    score, checklist = _checklist_review(draft, checkpoints)
     pass_score = get_int_setting("pass_score", 60)
-    review["passed"] = review["score"] >= pass_score
-    
-    if review["passed"]:
-        review["feedback"] = f"승인 기준({pass_score}점) 이상으로 통과했습니다. 점수: {review['score']}. 코멘트: {review['feedback']}"
-    else:
-        review["feedback"] = f"품질 미달: {review['feedback']} (점수 {review['score']} / 기준 {pass_score})"
+    passed = score >= pass_score
+
+    head = (f"{'✅ 통과' if passed else '❌ 미달'} · 총점 {score}/100 "
+            f"(기준 {pass_score}점)\n")
+    feedback = (head + checklist)[:990]   # review_feedback 컬럼(VARCHAR 1000) 보호
+    review: ReviewResult = {"passed": passed, "score": score, "feedback": feedback}
 
     revision_count = revision + 1
-    status = "awaiting_approval" if review["passed"] else "writing"
-
-    print(f"[검수] 결과: {'통과' if review['passed'] else '미달'} (점수 {review['score']} / 기준 {pass_score})")
-    _save_review(review, status, revision_count)   # 검수 점수/상태를 DB에 반영
-    
+    status = "awaiting_approval" if passed else "writing"
+    print(f"[검수] 결과: {'통과' if passed else '미달'} (점수 {score} / 기준 {pass_score})")
+    _save_review(review, status, revision_count)
     return {
         "review": review,
         "revision_count": revision_count,
@@ -48,55 +61,124 @@ def review_node(state: NewsletterState) -> NewsletterState:
     }
 
 
-def _llm_review(draft: str) -> ReviewResult:
-    """LLM을 사용하여 뉴스레터의 가독성, 흥미성, 형식을 종합 평가합니다."""
-    if not draft or len(draft.strip()) < 100:
-        return {"passed": False, "score": 30, "feedback": "초안의 분량이 너무 적거나 내용이 비어 있습니다."}
+# ==========================================================================
+# 체크리스트 채점 (구조 + 품질)
+# ==========================================================================
+def _checklist_review(draft: str, checkpoints: list[str] | None = None) -> tuple[int, str]:
+    """체크리스트 항목별로 채점하고, (총점, 체크리스트 코멘트)를 돌려줍니다.
 
-    system_prompt = (
-        "당신은 뉴스레터 편집장입니다. 제공된 초안의 품질을 엄격히 심사해야 합니다.\n"
-        "다음 3가지 기준을 바탕으로 평가해주세요:\n"
-        "1. 가독성 및 구성: 소제목(##) 활용 및 문단 나누기가 잘 되어 있는가?\n"
-        "2. 톤앤매너: 독자에게 친근하고 전문적인 어조를 유지하는가?\n"
-        "3. 정보의 가치: 핵심 내용이 명확하고 흥미로운가?\n\n"
-        "반드시 아래 JSON 포맷으로만 답변하세요. 다른 말은 하지 마세요.\n"
-        "{\n"
-        '  "passed": true 또는 false,\n'
-        '  "score": 0~100 사이의 정수 점수,\n'
-        '  "feedback": "탈락했다면 구체적으로 어떤 점을 수정해야 하는지 피드백을, 통과했다면 칭찬 및 보완점 작성"\n'
-        "}"
+    checkpoints: 카테고리에 등록된 '주요 체크포인트' — 있으면 주제별 체크 항목이 추가됩니다.
+    """
+    items = _structural_checks(draft) + _quality_checks(draft, checkpoints or [])
+    total = sum(it["score"] for it in items)
+    lines = []
+    for it in items:
+        mark = "✅" if it["score"] >= it["max"] else ("⚠️" if it["score"] > 0 else "❌")
+        lines.append(f"{mark} {it['label']} {it['score']}/{it['max']} — {it['comment']}")
+    return total, "\n".join(lines)
+
+
+def _item(label: str, max_pts: int, score: int, comment: str) -> dict:
+    return {"label": label, "max": max_pts, "score": max(0, min(score, max_pts)),
+            "comment": comment}
+
+
+def _structural_checks(draft: str) -> list[dict]:
+    """규칙 기반 구조 체크 (제목/소제목/분량/형식) — 총 40점."""
+    text = draft or ""
+    lines = text.split("\n")
+    has_title = any(ln.startswith("# ") for ln in lines)
+    section_count = sum(1 for ln in lines if ln.startswith("## "))
+    length = len(text.strip())
+    has_bullets = any(ln.strip().startswith(("- ", "* ")) for ln in lines)
+    paragraphs = [b for b in text.split("\n\n") if b.strip()]
+
+    items: list[dict] = []
+    items.append(_item(
+        "제목", 10, 10 if has_title else 0,
+        "맨 위 '# 제목'이 있습니다." if has_title else "맨 위 '# 제목' 줄이 필요합니다."))
+
+    sec_pts = 10 if section_count >= 2 else (5 if section_count == 1 else 0)
+    items.append(_item(
+        "소제목 구성", 10, sec_pts,
+        f"소제목(##) {section_count}개." + ("" if section_count >= 2 else " 2개 이상 권장.")))
+
+    len_pts = 10 if length >= 400 else (6 if length >= 200 else 2)
+    items.append(_item(
+        "분량", 10, len_pts,
+        f"본문 {length}자." + ("" if length >= 400 else " 다소 짧습니다(400자+ 권장).")))
+
+    fmt_pts = 10 if (has_bullets or len(paragraphs) >= 3) else 5
+    items.append(_item(
+        "가독성 형식", 10, fmt_pts,
+        "목록/문단 구분이 적절합니다." if fmt_pts == 10 else "문단 나눔이나 목록을 더 활용하세요."))
+    return items
+
+
+def _build_quality_spec(checkpoints: list[str]) -> list[tuple]:
+    """채점할 품질 항목 목록 (키, 표시명, 평가관점, 배점)을 만듭니다.
+
+    카테고리 체크포인트가 있으면 '주제 체크포인트' 항목을 추가하고,
+    배점은 항목 수에 맞춰 QUALITATIVE_TOTAL(60)을 고르게 나눠 줍니다.
+    """
+    spec = list(QUALITATIVE_ITEMS)   # (키, 표시명, 평가관점)
+    if checkpoints:
+        desc = "이 분야의 핵심 체크포인트를 충실히 다뤘는가 — " + "; ".join(checkpoints)
+        spec.append(("checkpoints", "주제 체크포인트", desc))
+
+    n = len(spec)
+    base = QUALITATIVE_TOTAL // n
+    remainder = QUALITATIVE_TOTAL - base * n
+    out = []
+    for i, (key, label, desc) in enumerate(spec):
+        pts = base + (1 if i < remainder else 0)   # 나머지는 앞쪽 항목에 1점씩
+        out.append((key, label, desc, pts))
+    return out
+
+
+def _quality_checks(draft: str, checkpoints: list[str]) -> list[dict]:
+    """LLM 기반 품질 체크 (리드/톤/가치/명확성/마무리 + 주제 체크포인트) — 총 60점."""
+    spec = _build_quality_spec(checkpoints)
+
+    # 분량이 너무 적으면 LLM 호출 없이 0점 처리
+    if not draft or len(draft.strip()) < 80:
+        return [_item(label, pts, 0, "본문이 비어 있거나 너무 짧습니다.")
+                for _key, label, _desc, pts in spec]
+
+    rubric = "\n".join(f"- {key}: {desc}" for key, _label, desc, _pts in spec)
+    keys = ", ".join(f'"{key}"' for key, *_ in spec)
+    skeleton = ", ".join(f'"{key}": {{"score": 0, "comment": ""}}' for key, *_ in spec)
+    system = (
+        "당신은 10년차 뉴스레터 편집장입니다. 아래 초안을 체크리스트 항목별로 0~100점으로 채점하세요.\n"
+        f"[채점 항목]\n{rubric}\n\n"
+        "반드시 아래 JSON 형식으로만 답하세요. 각 항목에 score(0~100 정수)와 짧은 comment(한국어 한 문장).\n"
+        "{ " + skeleton + " }\n"
+        f"(키는 정확히 {keys} 만 사용)"
     )
+    answer = ask_ai(system, f"--- 뉴스레터 초안 ---\n{draft}")
 
+    # 가짜 모드 → 안전 기본값(중상 점수)으로 통과 흐름 유지
+    if not answer or answer.startswith("[가짜 AI 답변]"):
+        return [_item(label, pts, int(pts * 0.75), "테스트 모드: 임시 점수")
+                for _key, label, _desc, pts in spec]
     try:
-        # 공통 모듈인 ask_ai를 통해 호출 (Mock 모드 자동 대응)
-        response = ask_ai(system_prompt, f"--- 뉴스레터 초안 ---\n{draft}")
-        
-        # 가짜 AI 답변인 경우의 예외 처리 (Fail-safe)
-        if response.startswith("[가짜 AI 답변]"):
-            return {
-                "passed": True,
-                "score": 85,
-                "feedback": "가짜 AI 검수 모드입니다. 테스트를 위해 임시 통과시킵니다."
-            }
-
-        # JSON 파싱 (안전장치 포함)
-        clean_response = response.strip().replace("```json", "").replace("```", "")
-        result = json.loads(clean_response)
-        
-        # 타입 검증 및 기본값 보장
-        return {
-            "passed": bool(result.get("passed", False)),
-            "score": int(result.get("score", 0)),
-            "feedback": str(result.get("feedback", "평가 결과가 올바르지 않습니다."))
-        }
+        clean = answer.strip().replace("```json", "").replace("```", "")
+        data = json.loads(clean)
     except Exception as e:
-        print(f"[검수 에러] LLM 검수 중 오류 발생: {e}")
-        # LLM 장애 시 시스템이 멈추지 않도록 Fail-Safe 처리 (재작성 유도)
-        return {
-            "passed": False,
-            "score": 50,
-            "feedback": f"AI 검수 프로세스 오류로 인해 재작성을 요청합니다. (에러: {e})"
-        }
+        print(f"[검수] 품질 JSON 파싱 실패 → 기본값 사용: {e}")
+        return [_item(label, pts, int(pts * 0.6), "AI 응답 해석 실패로 기본 점수 적용")
+                for _key, label, _desc, pts in spec]
+
+    items: list[dict] = []
+    for key, label, _desc, pts in spec:
+        raw = data.get(key) or {}
+        try:
+            ratio = max(0, min(int(raw.get("score", 0)), 100)) / 100
+        except (TypeError, ValueError):
+            ratio = 0.6
+        comment = str(raw.get("comment") or "").strip() or "-"
+        items.append(_item(label, pts, round(pts * ratio), comment[:80]))
+    return items
 
 
 def _save_review(review: ReviewResult, status: str, revision_count: int) -> None:
