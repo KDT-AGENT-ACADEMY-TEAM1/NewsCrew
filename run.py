@@ -16,7 +16,7 @@ import uuid                      # 매번 다른 작업 ID(thread_id) 만들 때
 
 import streamlit as st
 
-from app.agents import ask_ai    # LLM 호출 도우미 (키워드 추출에 사용)
+from app.llm import ask_ai       # LLM 호출 도우미 (키워드 추출에 사용)
 from app.graph import graph      # 실제 일을 하는 AI 그래프(백엔드)
 
 
@@ -62,7 +62,8 @@ def init_state():
     ss.setdefault("max_rev", 2)                        # 최대 재작성 횟수
     ss.setdefault("subscribers", [])                   # 메일링리스트(구독자 이메일)
     ss.setdefault("reports", {})                        # 보고서 ID → 생성 결과(snap)
-    ss.setdefault("menu", "📝 뉴스레터작성")             # 현재 선택된 메뉴(페이지)
+    ss.setdefault("pending", None)                      # 생성 대기 중인 작업({"keywords": [...]}) — '작성중' 화면용
+    ss.setdefault("menu", "📝 뉴스레터작성")             # 현재 선택된 메뉴(페이지) — PAGES 의 첫 키
 
 
 # ==========================================================================
@@ -326,6 +327,22 @@ def page_input():
                          help="생성 결과 화면에서 전체 보고서 보기"):
                 open_report(report_id)
 
+    # (1-2) 작성중이면: 채팅 영역 끝에 '작성중...' 카드를 먼저 그린 뒤, 그 자리에서 생성 실행.
+    #   Streamlit 은 블로킹 호출(run_pipeline) '전에' 그린 요소를 먼저 브라우저에 보내므로,
+    #   사용자는 생성이 도는 동안 이 '작성중' 말풍선을 보게 됩니다. 끝나면 rerun 으로 결과 카드로 교체됩니다.
+    pending = st.session_state.pending
+    if pending:
+        kw = ", ".join(pending["keywords"])
+        st.markdown(
+            f'<div class="msg bot">⏳ <b>작성중...</b> '
+            f"'{kw}' 주제로 리서치 → 작성 → 검수를 진행하고 있어요 🛠️</div>",
+            unsafe_allow_html=True,
+        )
+        snap = run_pipeline(pending["keywords"], st.session_state.max_rev)
+        push_report_message(snap, f"'{kw}' 뉴스레터를 만들었어요! 📰")
+        st.session_state.pending = None
+        st.rerun()   # '작성중' 카드를 결과 카드로 교체
+
     # (2) 입력 폼 — 전송 버튼을 누르면 submitted 가 True 가 됩니다.
     with st.form("chat_form", clear_on_submit=True):
         prompt = st.text_input("메시지", placeholder="예: 전기차랑 배터리 소식 정리해줘")
@@ -373,12 +390,9 @@ def handle_submit(prompt: str):
             {"role": "assistant", "content": "주제를 조금 더 구체적으로 적어 주세요."})
         return
 
-    # 3. AI 실행 (스피너 = 빙글빙글 도는 표시)
-    with st.spinner("뉴스레터를 만드는 중... 🛠️"):
-        snap = run_pipeline(keywords, st.session_state.max_rev)
-
-    # 4. 결과 카드를 채팅에 추가
-    push_report_message(snap, f"'{', '.join(keywords)}' 뉴스레터를 만들었어요! 📰")
+    # 3. 실제 생성은 '다음 rerun'에서 실행합니다. (여기서 바로 돌리면 '작성중' 화면을 못 보여 줌)
+    #    pending 만 예약해 두면, page_input() 이 '작성중' 카드를 먼저 그린 뒤 생성을 실행합니다.
+    st.session_state.pending = {"keywords": keywords}
 
 
 def handle_reject_to_chat(thread_id: str, feedback: str):
@@ -428,8 +442,8 @@ def page_result():
             st.rerun()
 
         if c2.button("↩️ 반려 → 재작성", use_container_width=True):
-            st.session_state.snap = reject(st.session_state.thread_id, feedback.strip())
-            st.rerun()
+            # 수정 요청 문구를 채팅창으로 가져가 재작성합니다.
+            handle_reject_to_chat(st.session_state.thread_id, feedback.strip())
 
     elif snap["status"] == "sent":
         st.success("✅ 발송 완료!")
@@ -506,8 +520,8 @@ def render_header():
 def render_sidebar() -> str:
     """왼쪽 메뉴를 그리고, 사용자가 고른 페이지 이름을 돌려줍니다.
 
-    key="menu" 로 선택값을 st.session_state.menu 에 묶어 두었습니다.
-    → open_report() 가 남긴 '이동 예약(goto)'을 위젯 생성 '전에' 반영해 페이지를 전환합니다.
+    key="menu" 로 선택값을 묶어 두어, handle_reject_to_chat() 처럼 코드에서
+    '이동 예약(goto)'을 남기면 위젯 생성 '전에' 반영되어 페이지가 전환됩니다.
     """
     # 라디오 위젯을 만들기 전에만 menu 값을 바꿀 수 있습니다.
     pending = st.session_state.pop("goto", None)
