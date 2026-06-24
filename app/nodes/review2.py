@@ -1,50 +1,41 @@
-"""[노드] 검수 — 초안 품질 판정 (자동 1차 검수).
-
-검수 결과(점수/통과 여부)를 DB(newsletter)에 저장합니다.
-이 노드까지가 '그래프 한 덩어리'이고, 직후 send 직전에서 멈춰 사람 승인을 받습니다.
-"""
 from __future__ import annotations
 
 import json
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI  # 혹은 사용하는 LLM 컴포넌트
 from langgraph.config import get_config
 
-from ..db import execute, get_int_setting
-from ..llm import ask_ai
+from ..db import execute
 from ..state import NewsletterState, ReviewResult
 
+# LLM 초기화 (예시: GPT-4o 등 추론 능력이 좋은 모델 추천)
+llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
 
 # ==========================================================================
 # STEP 4. 검수 노드 — 초안 품질 판정 + 점수 저장
-#   '통과' 여부는 환경설정(app_setting)의 '승인 기준 점수(pass_score)'로 정합니다.
 # ==========================================================================
 def review_node(state: NewsletterState) -> NewsletterState:
     draft = state.get("draft", "")
     revision = state.get("revision_count", 0)
     print(f"[검수] AI 품질 검증 시작 ({revision}회차)")
 
-    # 1. ask_ai() 로 LLM 검수를 수행합니다.
+    # 1. 단순 규칙 기반 대신 LLM 기반 검수 수행
     review = _llm_review(draft)
     
-    # 2. 통과 기준 점수를 환경설정에서 읽어와 다시 판정합니다. (Passed 여부 재조정)
-    pass_score = get_int_setting("pass_score", 60)
-    review["passed"] = review["score"] >= pass_score
-    
-    if review["passed"]:
-        review["feedback"] = f"승인 기준({pass_score}점) 이상으로 통과했습니다. 점수: {review['score']}. 코멘트: {review['feedback']}"
-    else:
-        review["feedback"] = f"품질 미달: {review['feedback']} (점수 {review['score']} / 기준 {pass_score})"
-
     revision_count = revision + 1
+    # 통과하면 사람 승인 대기(interrupt), 실패하면 다시 작성(writing) 노드로 분기하기 위한 상태 설정
     status = "awaiting_approval" if review["passed"] else "writing"
 
-    print(f"[검수] 결과: {'통과' if review['passed'] else '미달'} (점수 {review['score']} / 기준 {pass_score})")
-    _save_review(review, status, revision_count)   # 검수 점수/상태를 DB에 반영
+    print(f"[검수] 결과: {'통과' if review['passed'] else '미달'} (점수: {review['score']})")
+    
+    # 2. DB에 검수 결과 반영
+    _save_review(review, status, revision_count)   
     
     return {
         "review": review,
         "revision_count": revision_count,
         "status": status,
-        "human_feedback": "",   # 피드백은 한 번 쓰고 비웁니다
+        "human_feedback": "",  # 이전 차수의 피드백은 초기화
     }
 
 
@@ -61,27 +52,20 @@ def _llm_review(draft: str) -> ReviewResult:
         "3. 정보의 가치: 핵심 내용이 명확하고 흥미로운가?\n\n"
         "반드시 아래 JSON 포맷으로만 답변하세요. 다른 말은 하지 마세요.\n"
         "{\n"
-        '  "passed": true 또는 false,\n'
+        '  "passed": true 또는 false (종합 점수가 80점 이상이면 true),\n'
         '  "score": 0~100 사이의 정수 점수,\n'
         '  "feedback": "탈락했다면 구체적으로 어떤 점을 수정해야 하는지 피드백을, 통과했다면 칭찬 및 보완점 작성"\n'
         "}"
     )
 
     try:
-        # 공통 모듈인 ask_ai를 통해 호출 (Mock 모드 자동 대응)
-        response = ask_ai(system_prompt, f"--- 뉴스레터 초안 ---\n{draft}")
+        response = llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"--- 뉴스레터 초안 ---\n{draft}")
+        ])
         
-        # 가짜 AI 답변인 경우의 예외 처리 (Fail-safe)
-        if response.startswith("[가짜 AI 답변]"):
-            return {
-                "passed": True,
-                "score": 85,
-                "feedback": "가짜 AI 검수 모드입니다. 테스트를 위해 임시 통과시킵니다."
-            }
-
         # JSON 파싱 (안전장치 포함)
-        clean_response = response.strip().replace("```json", "").replace("```", "")
-        result = json.loads(clean_response)
+        result = json.loads(response.content.strip().replace("```json", "").replace("```", ""))
         
         # 타입 검증 및 기본값 보장
         return {
@@ -100,17 +84,16 @@ def _llm_review(draft: str) -> ReviewResult:
 
 
 def _save_review(review: ReviewResult, status: str, revision_count: int) -> None:
-    """검수 점수/코멘트/상태를 newsletter 테이블에 갱신합니다.
-
-    write 노드가 먼저 만들어 둔 같은 thread_id 행을 UPDATE 합니다.
-    thread_id 는 그래프 실행 설정(get_config)에서 가져옵니다. (best-effort)
-    """
+    """검수 점수/코멘트/상태를 newsletter 테이블에 갱신합니다."""
     try:
         thread_id = (get_config().get("configurable") or {}).get("thread_id")
     except Exception:
-        thread_id = None      # 그래프 밖 단독 호출(예: 테스트)이면 저장 생략
+        thread_id = None
+        
     if not thread_id:
+        print("[검수] thread_id를 찾을 수 없어 DB 저장을 건너뜁니다.")
         return
+        
     try:
         execute(
             "UPDATE newsletter "

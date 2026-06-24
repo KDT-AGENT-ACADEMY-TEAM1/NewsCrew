@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from .llm import _get_llm, _model_name, ask_ai
-from .nodes.research import research_node, route_after_research
+from .nodes.research_old import research_node, route_after_research
 from .nodes.review import review_node
 from .nodes.send import send_node
 from .nodes.tools import tools_node
