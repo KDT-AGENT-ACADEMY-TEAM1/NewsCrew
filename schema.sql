@@ -130,6 +130,20 @@ CREATE TABLE IF NOT EXISTS app_setting (
 -- 뉴스레터 생성 타입 (요약형 / 트렌드분석형 / 실무요약형 …)
 --   기본값은 app/db.py 의 _seed_newsletter_types() 가 넣습니다.
 -- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS newsletter_send (
+    id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '발송 로그 ID',
+    thread_id   VARCHAR(64)  NOT NULL                COMMENT '보고서 thread_id',
+    email       VARCHAR(255) NOT NULL                COMMENT '수신자 이메일',
+    name        VARCHAR(100) NULL                    COMMENT '수신자 이름',
+    sent_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '발송일시',
+    PRIMARY KEY (id),
+    KEY idx_newsletter_send_thread (thread_id)
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci
+  COMMENT='뉴스레터 발송 이력';
+
+
 CREATE TABLE IF NOT EXISTS newsletter_type (
     id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '타입 ID',
     code        VARCHAR(50)  NOT NULL                COMMENT '타입 코드(영문 슬러그)',
