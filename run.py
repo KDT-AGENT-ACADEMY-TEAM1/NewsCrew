@@ -409,10 +409,10 @@ def page_input():
             f"'{kw}' 주제로 리서치 → 작성 → 검수를 진행하고 있어요 🛠️</div>",
             unsafe_allow_html=True,
         )
-        snap = run_pipeline(pending["keywords"], st.session_state.max_rev)
+        snap = run_pipeline(pending["keywords"], st.session_state.max_rev,
+                            pending.get("category_id"))
         push_report_message(snap, f"'{kw}' 뉴스레터를 만들었어요! 📰")
 
-        
         st.session_state.pending = None
         st.rerun()   # '작성중' 카드를 결과 카드로 교체
 
@@ -497,12 +497,16 @@ def handle_category_submit(labels: list[str], catalog: list[dict]):
     if not keywords:
         return
 
+    # 선택한 카테고리(첫 번째)를 이 보고서의 관심분야로 연결합니다.
+    by_label = {row["label"]: row["id"] for row in catalog}
+    category_id = by_label.get(labels[0]) if labels else None
+
     # 자동 생성된 요청 코멘트 (사용자가 직접 친 것처럼 채팅에 올라갑니다)
     comment = f"[{', '.join(labels)}] 관련 최신 소식으로 뉴스레터 만들어줘"
     st.session_state.messages.append({"role": "user", "content": comment})
 
     # 작성중 화면 → 생성 → 결과 (직접 입력과 동일한 흐름)
-    st.session_state.pending = {"keywords": keywords}
+    st.session_state.pending = {"keywords": keywords, "category_id": category_id}
 
 
 def handle_reject_to_chat(thread_id: str, feedback: str):
@@ -535,28 +539,49 @@ def page_result():
 
 
 def _result_list():
-    """생성된 보고서들을 DB(newsletter)에서 읽어 '테이블'로 보여 줍니다."""
+    """생성된 보고서들을 DB(newsletter)에서 읽어 '테이블'로 보여 줍니다.
+
+    상단에서 관심 카테고리로 필터링할 수 있습니다.
+    컬럼: 작성일 · 관심영역 · 메일내용(짧게) · 상태 · 점수 · 관리
+    """
+    # (1) 카테고리 필터
+    catalog = get_flat_categories()                       # interest_category 의 활성 분야
+    label_to_id = {row["label"]: row["id"] for row in catalog}
+    choice = st.selectbox("관심 카테고리 필터", ["전체"] + list(label_to_id.keys()),
+                          key="result_filter")
+
+    # (2) 필터 조건에 맞춰 조회 (관심분야명은 join 으로)
+    sql = (
+        "SELECT n.thread_id, n.title, n.draft, n.status, n.review_score, n.created_at, "
+        "       c.name AS category "
+        "FROM newsletter n "
+        "LEFT JOIN interest_category c ON c.id = n.category_id "
+    )
     try:
-        rows = fetch_all(
-            "SELECT thread_id, title, status, review_score, revision_count, created_at "
-            "FROM newsletter ORDER BY created_at DESC, id DESC"
-        )
+        if choice != "전체":
+            rows = fetch_all(sql + "WHERE n.category_id = %s ORDER BY n.created_at DESC, n.id DESC",
+                             (label_to_id[choice],))
+        else:
+            rows = fetch_all(sql + "ORDER BY n.created_at DESC, n.id DESC")
     except Exception as e:
         st.error(f"DB 연결에 실패했습니다: {e}")
         return
 
     if not rows:
-        st.info("아직 생성된 보고서가 없습니다. '뉴스레터작성'에서 먼저 생성하세요.")
+        msg = "아직 생성된 보고서가 없습니다. '뉴스레터작성'에서 먼저 생성하세요." \
+            if choice == "전체" else "이 카테고리로 생성된 보고서가 없습니다."
+        st.info(msg)
         return
 
-    st.caption(f"총 {len(rows)}건 · 행의 '상세보기'로 본문 확인 및 승인/반려할 수 있어요.")
+    st.caption(f"총 {len(rows)}건 · '상세보기'로 본문 확인 및 승인/반려할 수 있어요.")
 
     # keyed 컨테이너로 감싸 '이 테이블에만' 컴팩트 CSS(inject_css 의 .st-key-resulttbl)를 적용.
     with st.container(key="resulttbl"):
-        # 표 헤더
-        widths = [2.4, 3.4, 1.6, 0.9, 1.3, 0.8]
+        # 표 헤더:  작성일 · 관심영역 · 메일내용 · 상태 · 점수 · 관리(상세/삭제)
+        widths = [1.7, 1.7, 3.2, 1.3, 0.7, 1.3, 0.7]
+        headers = ["작성일", "관심영역", "메일내용", "상태", "점수", "관리", ""]
         head = st.columns(widths, vertical_alignment="center")
-        for col, title in zip(head, ["생성일시", "제목", "상태", "점수", "", ""]):
+        for col, title in zip(head, headers):
             col.markdown(f"<div class='rhead'>{title}</div>", unsafe_allow_html=True)
         st.markdown("<hr class='rdiv head'>", unsafe_allow_html=True)   # 헤더 아래 굵은 선
 
@@ -564,16 +589,19 @@ def _result_list():
         for r in rows:
             c = st.columns(widths, vertical_alignment="center")
             created = str(r["created_at"])[:16]              # YYYY-MM-DD HH:MM
+            category = r["category"] or "직접입력"
+            excerpt = draft_excerpt(r["draft"] or "", 50) or "-"
             score = r["review_score"]
             score_txt = score if score is not None else "–"
             c[0].markdown(f"<div class='rcell muted'>{created}</div>", unsafe_allow_html=True)
-            c[1].markdown(f"<div class='rcell title'>{r['title'] or '-'}</div>", unsafe_allow_html=True)
-            c[2].markdown(f"<div class='rcell'>{status_badge(r['status'])}</div>", unsafe_allow_html=True)
-            c[3].markdown(f"<div class='rcell muted'>{score_txt}</div>", unsafe_allow_html=True)
-            if c[4].button("상세보기", key=f"view_{r['thread_id']}", use_container_width=True):
+            c[1].markdown(f"<div class='rcell'>{category}</div>", unsafe_allow_html=True)
+            c[2].markdown(f"<div class='rcell'>{excerpt}</div>", unsafe_allow_html=True)
+            c[3].markdown(f"<div class='rcell'>{status_badge(r['status'])}</div>", unsafe_allow_html=True)
+            c[4].markdown(f"<div class='rcell muted'>{score_txt}</div>", unsafe_allow_html=True)
+            if c[5].button("상세보기", key=f"view_{r['thread_id']}", use_container_width=True):
                 st.session_state.view_report = r["thread_id"]
                 st.rerun()
-            if c[5].button("🗑️", key=f"del_{r['thread_id']}", help="삭제", use_container_width=True):
+            if c[6].button("🗑️", key=f"del_{r['thread_id']}", help="삭제", use_container_width=True):
                 _delete_report(r["thread_id"])
                 st.rerun()
             st.markdown("<hr class='rdiv'>", unsafe_allow_html=True)    # 행 구분선(가로 전체)

@@ -102,3 +102,142 @@ def ping() -> bool:
     except Exception as e:
         print(f"[DB] 접속 확인 실패: {e}")
         return False
+
+
+# --------------------------------------------------------------------------
+# 초기화 — 기본 테이블 생성 + 기본 카테고리 시드
+#   app/__init__.py 에서 한 번 호출합니다. (DB가 없거나 막혀 있어도 앱은 계속 동작)
+# --------------------------------------------------------------------------
+
+# 카테고리가 하나도 없을 때 넣어 줄 기본 분야들 (interest_category)
+DEFAULT_CATEGORIES = [
+    {
+        "code": "ai",
+        "name": "AI/생성형AI",
+        "keywords": [
+            "ChatGPT", "Claude", "Gemini", "OpenAI", "Anthropic",
+            "생성형 AI", "LLM", "AI 에이전트", "LangChain",
+            "LangGraph", "RAG", "MCP"
+        ]
+    },
+    {
+        "code": "tech",
+        "name": "IT/기술",
+        "keywords": [
+            "클라우드", "개발자 기술", "오픈소스", "사이버보안",
+            "데이터사이언스", "머신러닝", "딥러닝", "반도체",
+            "로봇", "디지털전환"
+        ]
+    },
+    {
+        "code": "economy",
+        "name": "경제/금융",
+        "keywords": [
+            "증시", "금리", "환율", "부동산",
+            "금융", "재테크", "경제정책", "가상자산"
+        ]
+    },
+    {
+        "code": "startup",
+        "name": "스타트업/비즈니스",
+        "keywords": [
+            "스타트업", "벤처투자", "기업전략",
+            "마케팅", "브랜딩", "경영", "창업"
+        ]
+    },
+    {
+        "code": "education",
+        "name": "교육/에듀테크",
+        "keywords": [
+            "교육정책", "에듀테크", "온라인교육",
+            "AI교육", "고등교육", "대학", "학습분석"
+        ]
+    },
+    {
+        "code": "research",
+        "name": "연구/학술",
+        "keywords": [
+            "논문", "학술연구", "연구성과",
+            "연구비", "SCI", "학회", "연구윤리"
+        ]
+    },
+    {
+        "code": "mobility",
+        "name": "모빌리티",
+        "keywords": [
+            "전기차", "배터리", "자율주행",
+            "항공", "드론", "UAM", "스마트모빌리티"
+        ]
+    },
+    {
+        "code": "healthcare",
+        "name": "헬스케어/바이오",
+        "keywords": [
+            "헬스케어", "바이오", "의료AI",
+            "제약", "유전체", "디지털헬스"
+        ]
+    },
+    {
+        "code": "government",
+        "name": "정부/공공",
+        "keywords": [
+            "정부정책", "공공데이터",
+            "디지털플랫폼정부", "행정혁신",
+            "법률", "규제"
+        ]
+    },
+    {
+        "code": "global",
+        "name": "글로벌 동향",
+        "keywords": [
+            "미국", "중국", "일본", "유럽",
+            "글로벌 경제", "해외 기술동향",
+            "국제정세"
+        ]
+    }
+]
+
+
+def init_db() -> None:
+    """기본 테이블이 없으면 만들고, 카테고리가 비어 있으면 기본값을 넣습니다.
+
+    DB가 꺼져 있거나 권한이 없어도 앱이 죽지 않도록 예외를 삼킵니다(best-effort).
+    """
+    try:
+        _create_tables_if_missing()
+        _seed_default_categories()
+    except Exception as e:
+        print(f"[DB] 초기화 건너뜀(연결/권한 확인): {e}")
+
+
+def _create_tables_if_missing() -> None:
+    """schema.sql 의 CREATE TABLE 문(IF NOT EXISTS)을 실행해 기본 테이블을 만듭니다."""
+    schema_path = os.path.join(os.path.dirname(__file__), os.pardir, "schema.sql")
+    with open(schema_path, encoding="utf-8") as f:
+        sql = f.read()
+    # ';' 로 나눠 'CREATE TABLE' 이 든 문장만 실행 (schema.sql 은 IF NOT EXISTS 라 안전)
+    statements = [s.strip() for s in sql.split(";") if "CREATE TABLE" in s.upper()]
+    with connection() as conn:
+        with conn.cursor() as cur:
+            for stmt in statements:
+                cur.execute(stmt)
+
+
+def _seed_default_categories() -> None:
+    """기본 카테고리 중 '코드가 아직 없는 것'만 골라 넣습니다. (이미 있으면 건드리지 않음)"""
+    import json
+
+    existing = {r["code"] for r in fetch_all("SELECT code FROM interest_category")}
+    added = []
+    for order, cat in enumerate(DEFAULT_CATEGORIES):
+        if cat["code"] in existing:
+            continue   # 같은 코드가 이미 있으면 중복 추가 안 함
+        execute(
+            "INSERT INTO interest_category (code, name, keywords, sort_order) "
+            "VALUES (%s, %s, %s, %s)",
+            (cat["code"], cat["name"],
+             json.dumps(cat["keywords"], ensure_ascii=False), order),
+        )
+        added.append(cat["name"])
+    if added:
+        print(f"[DB] 기본 카테고리 추가: {', '.join(added)}")
