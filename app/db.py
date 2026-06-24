@@ -382,3 +382,11 @@ def create_newsletter_type(code: str, name: str,
 def delete_newsletter_type(type_id: int) -> int:
     """생성 타입 한 건을 삭제합니다."""
     return execute("DELETE FROM newsletter_type WHERE id = %s", (type_id,))
+
+
+def get_type_name(code: str | None) -> str | None:
+    """타입 코드(summary/trend …)로 표시명을 가져옵니다. (없으면 코드 그대로, None이면 None)"""
+    if not code:
+        return None
+    row = fetch_one("SELECT name FROM newsletter_type WHERE code = %s", (code,))
+    return (row or {}).get("name") or code
