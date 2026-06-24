@@ -1,4 +1,4 @@
-"""맞춤형 뉴스레터 에이전트 — 화면(Streamlit) · 학습용 심플 버전.
+"""맞춤형 뉴스레터 에이전트 — 화면(Streamlit) · 학습용 심플 버전. v1
 
 이 파일은 '화면'만 담당합니다. 실제 일(리서치/작성/검수/발송)은
 app/graph.py 의 그래프가 합니다. 여기서는 그 그래프를 호출하고
@@ -18,7 +18,17 @@ import streamlit as st
 
 from app.llm import ask_ai       # LLM 호출 도우미 (키워드 추출에 사용)
 from app.graph import graph      # 실제 일을 하는 AI 그래프(백엔드)
-from app.db import execute, fetch_all, fetch_one   # 보고서 목록/상세/삭제 (DB: newsletter)
+from app.db import (   # 보고서(newsletter) + 환경설정(app_setting) + 생성 타입(newsletter_type)
+    create_newsletter_type,
+    delete_newsletter_type,
+    execute,
+    fetch_all,
+    fetch_one,
+    get_int_setting,
+    get_settings,
+    list_newsletter_types,
+    update_setting,
+)
 from app.categories import (   # 관심 카테고리 (DB: interest_category)
     create_category,
     delete_category,
@@ -335,13 +345,17 @@ def _read_state(thread_id: str) -> dict:
     }
 
 
-def run_pipeline(keywords: list[str], max_rev: int, category_id: int | None = None) -> dict:
+def run_pipeline(keywords: list[str], max_rev: int, category_id: int | None = None,
+                 type_name: str | None = None, type_desc: str | None = None) -> dict:
     """키워드로 그래프를 처음부터 실행 → 리서치·작성·검수 후 '승인 대기'에서 멈춤."""
     thread_id = uuid.uuid4().hex[:12]              # 이번 작업의 새 ID
     initial = {"keywords": keywords, "revision_count": 0,
                "max_revisions": max_rev, "status": "researching"}
     if category_id is not None:                    # 카테고리로 생성한 경우만 연결
         initial["category_id"] = category_id
+    if type_name:                                  # 생성 타입(스타일)을 작성에 반영
+        initial["type_name"] = type_name
+        initial["type_desc"] = type_desc or ""
     graph.invoke(initial, _config(thread_id))
     return _read_state(thread_id)
 
@@ -404,17 +418,26 @@ def page_input():
     pending = st.session_state.pending
     if pending:
         kw = ", ".join(pending["keywords"])
+        # 타입 목록이 있으면 타입별로, 없으면(직접 입력) 1건만 생성합니다. (None = 타입 없음)
+        types = pending.get("types") or [None]
+        batch = f"{len(types)}개 타입" if pending.get("types") else "뉴스레터"
         st.markdown(
             f'<div class="msg bot">⏳ <b>작성중...</b> '
-            f"'{kw}' 주제로 리서치 → 작성 → 검수를 진행하고 있어요 🛠️</div>",
+            f"'{kw}' 주제로 {batch}를 리서치 → 작성 → 검수 중이에요 🛠️</div>",
             unsafe_allow_html=True,
         )
-        snap = run_pipeline(pending["keywords"], st.session_state.max_rev,
-                            pending.get("category_id"))
-        push_report_message(snap, f"'{kw}' 뉴스레터를 만들었어요! 📰")
+        max_rev = get_int_setting("max_revisions", 2)
+        for t in types:                                  # 타입별로 한 건씩 생성
+            tname = t["name"] if t else None
+            tdesc = t["description"] if t else None
+            snap = run_pipeline(pending["keywords"], max_rev,
+                                pending.get("category_id"), tname, tdesc)
+            intro = (f"'{kw}'" + (f" · {tname}" if tname else "")
+                     + " 뉴스레터를 만들었어요! 📰")
+            push_report_message(snap, intro)
 
         st.session_state.pending = None
-        st.rerun()   # '작성중' 카드를 결과 카드로 교체
+        st.rerun()   # '작성중' 카드를 결과 카드(들)로 교체
 
     # (2) 관심 카테고리로 빠르게 만들기 — 고르고 버튼을 누르면 '생성요청 코멘트'가 자동으로 채팅에 올라갑니다.
     with st.expander("📂 관심 카테고리로 만들기", expanded=False):
@@ -428,8 +451,34 @@ def page_input():
                 key="cat_select",
                 placeholder="예: AI/기술 > 생성형 AI",
             )
+
+            # 선택한 카테고리의 키워드를 아래에 자동으로 보여 줍니다.
+            if labels:
+                kws = keywords_for_labels(labels, catalog)
+                chips = " ".join(
+                    f"<span class='badge s-reviewing'>{kw}</span>" for kw in kws)
+                st.markdown(
+                    f"<div style='margin:.2rem 0 .6rem;'>"
+                    f"<span style='opacity:.7;'>키워드:</span> {chips}</div>",
+                    unsafe_allow_html=True,
+                )
+
+            # 생성 타입을 체크박스로 선택 (기본 전체 체크) — 체크된 타입만 생성합니다.
+            try:
+                types_all = list_newsletter_types(active_only=True)
+            except Exception:
+                types_all = []
+            selected_types = []
+            if types_all:
+                st.markdown("<span style='opacity:.7;'>생성 타입</span>",
+                            unsafe_allow_html=True)
+                cols = st.columns(len(types_all))
+                for col, t in zip(cols, types_all):
+                    if col.checkbox(t["name"], value=True, key=f"type_chk_{t['id']}"):
+                        selected_types.append(t)
+
             if st.button("선택한 카테고리로 생성", disabled=not labels, use_container_width=True):
-                handle_category_submit(labels, catalog)
+                handle_category_submit(labels, catalog, selected_types)
                 st.rerun()
 
     # (3) 직접 입력 폼 — 전송 버튼을 누르면 submitted 가 True 가 됩니다.
@@ -488,10 +537,12 @@ def handle_submit(prompt: str):
     st.session_state.pending = {"keywords": keywords}
 
 
-def handle_category_submit(labels: list[str], catalog: list[dict]):
-    """선택한 카테고리로 '생성요청 코멘트'를 자동 작성해 채팅에 올리고 생성을 예약합니다.
+def handle_category_submit(labels: list[str], catalog: list[dict],
+                           types: list[dict] | None = None):
+    """선택한 카테고리 + 체크한 생성 타입으로 생성을 예약합니다.
 
     카테고리는 키워드가 이미 정해져 있으므로 extract_keywords(추출) 없이 바로 씁니다.
+    types: 체크박스로 선택된 생성 타입 목록(각 타입마다 한 건씩 생성).
     """
     keywords = keywords_for_labels(labels, catalog)
     if not keywords:
@@ -501,12 +552,20 @@ def handle_category_submit(labels: list[str], catalog: list[dict]):
     by_label = {row["label"]: row["id"] for row in catalog}
     category_id = by_label.get(labels[0]) if labels else None
 
+    types = types or []   # 체크된 타입만 (없으면 타입 없이 1건)
+
     # 자동 생성된 요청 코멘트 (사용자가 직접 친 것처럼 채팅에 올라갑니다)
-    comment = f"[{', '.join(labels)}] 관련 최신 소식으로 뉴스레터 만들어줘"
+    if types:
+        type_txt = " · ".join(t["name"] for t in types)
+        comment = f"[{', '.join(labels)}] 관련 최신 소식으로 [{type_txt}] 뉴스레터 만들어줘"
+    else:
+        comment = f"[{', '.join(labels)}] 관련 최신 소식으로 뉴스레터 만들어줘"
     st.session_state.messages.append({"role": "user", "content": comment})
 
-    # 작성중 화면 → 생성 → 결과 (직접 입력과 동일한 흐름)
-    st.session_state.pending = {"keywords": keywords, "category_id": category_id}
+    # 작성중 화면 → (선택된 타입별 루프) 생성 → 결과
+    st.session_state.pending = {
+        "keywords": keywords, "category_id": category_id, "types": types,
+    }
 
 
 def handle_reject_to_chat(thread_id: str, feedback: str):
@@ -553,7 +612,7 @@ def _result_list():
     # (2) 필터 조건에 맞춰 조회 (관심분야명은 join 으로)
     sql = (
         "SELECT n.thread_id, n.title, n.draft, n.status, n.review_score, n.created_at, "
-        "       c.name AS category "
+        "       n.news_type, c.name AS category "
         "FROM newsletter n "
         "LEFT JOIN interest_category c ON c.id = n.category_id "
     )
@@ -577,9 +636,9 @@ def _result_list():
 
     # keyed 컨테이너로 감싸 '이 테이블에만' 컴팩트 CSS(inject_css 의 .st-key-resulttbl)를 적용.
     with st.container(key="resulttbl"):
-        # 표 헤더:  작성일 · 관심영역 · 메일내용 · 상태 · 점수 · 관리(상세/삭제)
-        widths = [1.7, 1.7, 3.2, 1.3, 0.7, 1.3, 0.7]
-        headers = ["작성일", "관심영역", "메일내용", "상태", "점수", "관리", ""]
+        # 표 헤더:  작성일 · 관심영역 · 타입 · 메일내용 · 상태 · 점수 · 관리(상세/삭제)
+        widths = [1.6, 1.6, 1.3, 3.0, 1.2, 0.7, 1.2, 0.7]
+        headers = ["작성일", "관심영역", "타입", "메일내용", "상태", "점수", "관리", ""]
         head = st.columns(widths, vertical_alignment="center")
         for col, title in zip(head, headers):
             col.markdown(f"<div class='rhead'>{title}</div>", unsafe_allow_html=True)
@@ -590,18 +649,20 @@ def _result_list():
             c = st.columns(widths, vertical_alignment="center")
             created = str(r["created_at"])[:16]              # YYYY-MM-DD HH:MM
             category = r["category"] or "직접입력"
+            news_type = r["news_type"] or "-"
             excerpt = draft_excerpt(r["draft"] or "", 50) or "-"
             score = r["review_score"]
             score_txt = score if score is not None else "–"
             c[0].markdown(f"<div class='rcell muted'>{created}</div>", unsafe_allow_html=True)
             c[1].markdown(f"<div class='rcell'>{category}</div>", unsafe_allow_html=True)
-            c[2].markdown(f"<div class='rcell'>{excerpt}</div>", unsafe_allow_html=True)
-            c[3].markdown(f"<div class='rcell'>{status_badge(r['status'])}</div>", unsafe_allow_html=True)
-            c[4].markdown(f"<div class='rcell muted'>{score_txt}</div>", unsafe_allow_html=True)
-            if c[5].button("상세보기", key=f"view_{r['thread_id']}", use_container_width=True):
+            c[2].markdown(f"<div class='rcell'>{news_type}</div>", unsafe_allow_html=True)
+            c[3].markdown(f"<div class='rcell'>{excerpt}</div>", unsafe_allow_html=True)
+            c[4].markdown(f"<div class='rcell'>{status_badge(r['status'])}</div>", unsafe_allow_html=True)
+            c[5].markdown(f"<div class='rcell muted'>{score_txt}</div>", unsafe_allow_html=True)
+            if c[6].button("상세보기", key=f"view_{r['thread_id']}", use_container_width=True):
                 st.session_state.view_report = r["thread_id"]
                 st.rerun()
-            if c[6].button("🗑️", key=f"del_{r['thread_id']}", help="삭제", use_container_width=True):
+            if c[7].button("🗑️", key=f"del_{r['thread_id']}", help="삭제", use_container_width=True):
                 _delete_report(r["thread_id"])
                 st.rerun()
             st.markdown("<hr class='rdiv'>", unsafe_allow_html=True)    # 행 구분선(가로 전체)
@@ -853,6 +914,103 @@ def page_categories():
 
 
 # ==========================================================================
+# 6-4) 화면(페이지) — 환경설정 (DB: app_setting)
+# ==========================================================================
+def page_settings():
+    st.markdown("## ⚙️ 환경설정")
+    st.caption("뉴스레터 자동 작성 관련 환경을 관리합니다. (DB: app_setting)")
+
+    try:
+        settings = get_settings()
+    except Exception as e:
+        st.error(f"DB 연결에 실패했습니다: {e}")
+        return
+    if not settings:
+        st.info("등록된 설정이 없습니다.")
+        return
+
+    # 설정 항목을 타입에 맞는 입력 위젯으로 그립니다.
+    with st.form("settings_form"):
+        new_values = {}
+        for s in settings:
+            key = s["setting_key"]
+            vtype = s["value_type"]
+            label = s["label"] or key
+            help_ = s["description"]
+            cur = s["setting_value"]
+            if vtype == "int":
+                new_values[key] = str(int(st.number_input(
+                    label, value=int(cur or 0), min_value=0, step=1,
+                    help=help_, key=f"set_{key}")))
+            elif vtype == "bool":
+                new_values[key] = "1" if st.checkbox(
+                    label, value=(str(cur) == "1"), help=help_, key=f"set_{key}") else "0"
+            else:
+                new_values[key] = st.text_input(
+                    label, value=cur or "", help=help_, key=f"set_{key}")
+        saved = st.form_submit_button("💾 저장")
+
+    if saved:
+        try:
+            for k, v in new_values.items():
+                update_setting(k, v)
+            st.success("환경설정을 저장했습니다.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"저장 실패: {e}")
+
+    st.divider()
+    _settings_newsletter_types()
+
+
+def _settings_newsletter_types():
+    """환경설정 화면의 '뉴스레터 생성 타입' 관리 섹션 (요약형/트렌드분석형/실무요약형 …)."""
+    st.markdown("### 🧩 뉴스레터 생성 타입")
+    st.caption("작성 스타일 타입을 관리합니다. (DB: newsletter_type)")
+
+    try:
+        types = list_newsletter_types()
+    except Exception as e:
+        st.error(f"생성 타입을 불러오지 못했습니다: {e}")
+        return
+
+    # (1) 새 타입 추가 폼
+    with st.form("add_type_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        name = col1.text_input("타입명 *", placeholder="예: 요약형")
+        code = col2.text_input("코드 * (영문 슬러그)", placeholder="예: summary")
+        desc = st.text_input("스타일 설명", placeholder="예: 핵심만 간결하게 요약하는 스타일")
+        added = st.form_submit_button("➕ 타입 추가")
+
+    if added:
+        if not name.strip() or not code.strip():
+            st.warning("타입명과 코드는 필수입니다.")
+        else:
+            try:
+                create_newsletter_type(code.strip(), name.strip(),
+                                       desc.strip() or None, sort_order=len(types))
+                st.success(f"'{name.strip()}' 타입을 추가했습니다!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"추가 실패 (코드 중복 등 확인): {e}")
+
+    # (2) 등록된 타입 목록 + 삭제
+    if not types:
+        st.info("등록된 생성 타입이 없습니다. 위에서 추가하세요.")
+        return
+    for t in types:
+        c1, c2 = st.columns([6, 1])
+        c1.markdown(
+            f"**{t['name']}** `{t['code']}`<br>"
+            f"<span style='color:#9ab;'>{t['description'] or '-'}</span>",
+            unsafe_allow_html=True,
+        )
+        if c2.button("🗑️", key=f"deltype_{t['id']}", help="삭제"):
+            delete_newsletter_type(t["id"])
+            st.rerun()
+
+
+# ==========================================================================
 # 7) 사이드바(왼쪽 메뉴) + 페이지 전환
 #    - 메뉴를 추가하려면 PAGES 에 ("이름": 함수) 한 줄만 더하면 됩니다.
 # ==========================================================================
@@ -861,6 +1019,7 @@ PAGES = {
     "📨 뉴스레터 생성 결과": page_result,
     "🗂️ 카테고리 등록": page_categories,
     "📨 메일링리스트": userlists,
+    "⚙️ 환경설정": page_settings,
 }
 
 
@@ -888,12 +1047,8 @@ def render_sidebar() -> str:
 
     with st.sidebar:
         st.markdown("### 📰 뉴스레터 에이전트")
-        st.session_state.max_rev = st.number_input(
-            "최대 재작성 횟수", min_value=1, max_value=5,
-            value=st.session_state.max_rev,
-            help="검수에서 품질 미달 시 작성 단계로 되돌아가는 최대 횟수",
-        )
         choice = st.radio("메뉴", list(PAGES.keys()), key="menu")
+        st.caption("재작성 횟수·승인 기준 점수는 '⚙️ 환경설정'에서 관리합니다.")
     return choice
 
 

@@ -25,7 +25,7 @@ from .tools import TOOLS_LIST
 # ==========================================================================
 def _model_name() -> str:
     """사용할 모델 이름. (환경변수 OPENAI_MODEL 로 바꿀 수 있음)"""
-    return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    return os.getenv("OPENAI_MODEL", "gpt-5-nano")
 
 
 @lru_cache(maxsize=2)

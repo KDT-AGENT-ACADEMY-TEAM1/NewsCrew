@@ -29,6 +29,12 @@ def write_node(state: NewsletterState) -> NewsletterState:
         "너는 뉴스레터 작성자다. 아래 리서치를 바탕으로 친근한 한국어 뉴스레터 초안을 써라. "
         "맨 위에 '# 제목' 한 줄, 본문에는 '## 소제목'을 2개 이상 넣어 마크다운으로 작성하라."
     )
+    # 생성 타입(요약형/트렌드분석형/실무요약형 …)이 지정되면 그 스타일을 반영합니다.
+    type_name = state.get("type_name")
+    if type_name:
+        type_desc = state.get("type_desc") or ""
+        system += (f" 이 뉴스레터는 '{type_name}' 스타일로 작성한다. {type_desc} "
+                   f"제목 끝에 '({type_name})'을 붙여라.")
     user = f"[리서치]\n{research}\n"
     if feedback:
         user += f"\n[수정 요청]\n{feedback}\n위 요청을 반드시 반영해서 다시 써 줘."
@@ -58,17 +64,18 @@ def _save_draft(state: NewsletterState, draft: str) -> None:
     try:
         execute(
             "INSERT INTO newsletter "
-            "(thread_id, category_id, title, keywords, draft, "
+            "(thread_id, category_id, news_type, title, keywords, draft, "
             " review_score, review_feedback, revision_count, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
             "ON DUPLICATE KEY UPDATE "
-            "  category_id = VALUES(category_id), "
+            "  category_id = VALUES(category_id), news_type = VALUES(news_type), "
             "  title = VALUES(title), keywords = VALUES(keywords), draft = VALUES(draft), "
             "  review_score = VALUES(review_score), review_feedback = VALUES(review_feedback), "
             "  revision_count = VALUES(revision_count), status = VALUES(status)",
             (
                 thread_id,
                 state.get("category_id"),
+                state.get("type_name"),
                 title,
                 json.dumps(state.get("keywords") or [], ensure_ascii=False),
                 draft,
