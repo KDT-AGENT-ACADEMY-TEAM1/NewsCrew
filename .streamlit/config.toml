@@ -1,0 +1,12 @@
+# Streamlit 설정
+#
+# [왜 fileWatcherType = "none"?]
+#   Streamlit 은 '코드 저장 시 자동 새로고침'을 위해 로드된 모든 모듈의 경로(__path__)를
+#   훑습니다. 그런데 이 프로젝트의 의존성 중 transformers 는 '지연 로딩' 방식이라,
+#   감시기가 모듈 경로를 확인하는 순간 무거운 서브모듈(zoedepth 등)을 import 하다 에러가 납니다.
+#   → 모듈 경로 감시를 꺼서(none) 그 충돌을 피합니다.
+#
+#   단점: 코드를 고쳐도 자동 새로고침이 안 됩니다. 브라우저 우상단 'Rerun'(또는 R 키)으로
+#         수동 새로고침하세요. 안정적인 reload 가 더 중요하면 "poll" 로 바꿔 시도해도 됩니다.
+[server]
+fileWatcherType = "none"
