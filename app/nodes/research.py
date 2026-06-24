@@ -14,7 +14,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from ..llm import _get_llm
 from ..state import NewsletterState
 from ..tools import search_news
+from dotenv import load_dotenv
 
+# 환경변수 로드
+load_dotenv()
 # ==========================================================================
 # STEP 2-a. 리서치 '에이전트' 노드 — LLM이 도구를 쓸지 스스로 판단
 # ==========================================================================
@@ -22,7 +25,9 @@ def research_node(state: NewsletterState) -> NewsletterState:
     keywords = state.get("keywords", [])
     topic = ", ".join(keywords)
     print(f"\n--- [Node: research] 리서치 에이전트 판단 중: {topic} ---")
+
     newsletter_text=search_news.invoke(topic)
+
     print("1.research_node:\n\n"+newsletter_text)
     llm = _get_llm(with_tools=True)
 
@@ -56,7 +61,9 @@ def research_node(state: NewsletterState) -> NewsletterState:
         1. 노이즈 제거: 뉴스레터의 인사말, 구독 유도, 홍보성 문구 등 불필요한 텍스트는 철저히 배제하고 사실(Fact), 데이터, 주요 트렌드만을 추출하세요.
         2. 어조 및 문체: 뉴스레터 특유의 친근한 구어체를 완벽히 제거하십시오. 비즈니스 보고서에 적합한 객관적이고 격식 있는 문어체('~함', '~임', '~로 분석됨')를 사용하고, 가독성을 높이기 위해 개조식(Bullet points)을 적극 활용하세요.
         3. 정보 재구성: 원문의 흐름을 그대로 따라가지 말고, 논리적인 보고서 구조(개요 -> 주요 내용 -> 시사점)에 맞게 정보를 재배치하세요.
-        4. 인사이트 도출: 원문에 포함된 사실을 바탕으로, 해당 {topic}이 향후 시장, 산업, 또는 기술 생태계에 미칠 영향력(Implication)을 분석하여 결론부에 포함하세요.
+        4. 인사이트 도출: 원문에 포함된 사실을 바탕으로, 해당 {topic}이 향후 시장, 산업, 또는 기술 생태계에 미칠 영향력(Implication)을 분석하여 
+           결론부에 포함하세요.
+           
 
         ## Output Format (출력 형식)
         반드시 아래의 마크다운 구조를 엄격하게 지켜서 출력하세요.

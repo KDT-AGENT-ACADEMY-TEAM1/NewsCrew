@@ -10,3 +10,4 @@
 #         수동 새로고침하세요. 안정적인 reload 가 더 중요하면 "poll" 로 바꿔 시도해도 됩니다.
 [server]
 fileWatcherType = "none"
+port = 8501          # 웹(Streamlit) 포트 — FastAPI(8000)와 다르게 둡니다
