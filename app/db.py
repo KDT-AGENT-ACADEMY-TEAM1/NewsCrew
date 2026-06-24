@@ -205,7 +205,12 @@ def init_db() -> None:
     """
     try:
         _create_tables_if_missing()
+        _ensure_newsletter_columns()   # 기존 DB 호환: 빠진 컬럼 보강
         _seed_default_categories()
+        _create_setting_table()        # 환경설정 테이블
+        _seed_settings()               # 환경설정 기본값
+        _create_newsletter_type_table()  # 뉴스레터 생성 타입 테이블
+        _seed_newsletter_types()         # 생성 타입 기본값
     except Exception as e:
         print(f"[DB] 초기화 건너뜀(연결/권한 확인): {e}")
 
@@ -221,6 +226,21 @@ def _create_tables_if_missing() -> None:
         with conn.cursor() as cur:
             for stmt in statements:
                 cur.execute(stmt)
+
+
+def _ensure_newsletter_columns() -> None:
+    """기존 DB 호환: newsletter 에 news_type 컬럼이 없으면 추가합니다."""
+    row = fetch_one(
+        "SELECT COUNT(*) AS n FROM information_schema.columns "
+        "WHERE table_schema = DATABASE() "
+        "  AND table_name = 'newsletter' AND column_name = 'news_type'"
+    )
+    if row and row.get("n", 0) == 0:
+        execute(
+            "ALTER TABLE newsletter "
+            "ADD COLUMN news_type VARCHAR(100) NULL COMMENT '생성 타입명' AFTER category_id"
+        )
+        print("[DB] newsletter.news_type 컬럼을 추가했습니다.")
 
 
 def _seed_default_categories() -> None:
@@ -241,3 +261,168 @@ def _seed_default_categories() -> None:
         added.append(cat["name"])
     if added:
         print(f"[DB] 기본 카테고리 추가: {', '.join(added)}")
+
+
+# --------------------------------------------------------------------------
+# 환경설정 (app_setting) — 뉴스레터 자동작성 관련 환경 관리
+#   key/value 방식이라 설정을 늘리기 쉽습니다. (DEFAULT_SETTINGS 에 한 줄 추가)
+# --------------------------------------------------------------------------
+DEFAULT_SETTINGS = [
+    {"key": "max_revisions", "value": "2",  "type": "int",
+     "label": "최대 재작성 횟수",
+     "desc": "검수 미달 시 작성 단계로 되돌아가는 최대 횟수 (무한 루프 방지)"},
+    {"key": "pass_score",    "value": "60", "type": "int",
+     "label": "승인 기준 점수",
+     "desc": "검수에서 '통과'로 인정할 최소 점수 (0~100)"},
+    {"key": "auto_send",     "value": "0",  "type": "bool",
+     "label": "자동 발송",
+     "desc": "검수 통과 시 사람 승인 없이 바로 발송 (1=켜기, 0=끄기)"},
+]
+
+
+def _create_setting_table() -> None:
+    """환경설정 테이블(app_setting)을 만듭니다. (IF NOT EXISTS 라 여러 번 호출해도 안전)"""
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS app_setting ("
+                "  setting_key   VARCHAR(50)  NOT NULL COMMENT '설정 키',"
+                "  setting_value VARCHAR(255) NULL     COMMENT '설정 값(문자열로 저장)',"
+                "  value_type    VARCHAR(20)  NOT NULL DEFAULT 'str' COMMENT '값 타입(int/bool/str)',"
+                "  label         VARCHAR(100) NULL     COMMENT '화면 표시명',"
+                "  description   VARCHAR(500) NULL     COMMENT '설명',"
+                "  sort_order    INT          NOT NULL DEFAULT 0     COMMENT '정렬 순서',"
+                "  updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP "
+                "                ON UPDATE CURRENT_TIMESTAMP COMMENT '수정일시',"
+                "  PRIMARY KEY (setting_key)"
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci "
+                "COMMENT='뉴스레터 자동작성 환경설정'"
+            )
+
+
+def _seed_settings() -> None:
+    """기본 환경설정 중 '키가 아직 없는 것'만 넣습니다. (이미 있으면 건드리지 않음)"""
+    existing = {r["setting_key"] for r in fetch_all("SELECT setting_key FROM app_setting")}
+    added = []
+    for order, s in enumerate(DEFAULT_SETTINGS):
+        if s["key"] in existing:
+            continue
+        execute(
+            "INSERT INTO app_setting "
+            "(setting_key, setting_value, value_type, label, description, sort_order) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (s["key"], s["value"], s["type"], s["label"], s["desc"], order),
+        )
+        added.append(s["label"])
+    if added:
+        print(f"[DB] 기본 환경설정 추가: {', '.join(added)}")
+
+
+def get_settings() -> list[dict]:
+    """모든 환경설정을 정렬 순서대로 조회합니다. (관리 화면용)"""
+    return fetch_all("SELECT * FROM app_setting ORDER BY sort_order, setting_key")
+
+
+def get_setting(key: str, default: str | None = None) -> str | None:
+    """설정 값(문자열)을 가져옵니다. 없으면 default 를 돌려줍니다."""
+    row = fetch_one("SELECT setting_value FROM app_setting WHERE setting_key = %s", (key,))
+    return row["setting_value"] if row else default
+
+
+def get_int_setting(key: str, default: int = 0) -> int:
+    """정수형 설정 값을 가져옵니다. (없거나 변환 실패 시 default)"""
+    try:
+        return int(get_setting(key))
+    except (TypeError, ValueError):
+        return default
+
+
+def get_bool_setting(key: str, default: bool = False) -> bool:
+    """불리언 설정 값을 가져옵니다. ('1/true/on/yes' 면 True)"""
+    val = get_setting(key)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "on", "yes")
+
+
+def update_setting(key: str, value) -> int:
+    """설정 값을 갱신합니다. (값은 문자열로 저장)"""
+    return execute(
+        "UPDATE app_setting SET setting_value = %s WHERE setting_key = %s",
+        (str(value), key),
+    )
+
+
+# --------------------------------------------------------------------------
+# 뉴스레터 생성 타입 (newsletter_type) — 요약형 / 트렌드분석형 / 실무요약형 …
+#   작성 스타일을 골라 쓰기 위한 목록입니다. description 에 스타일 설명을 둡니다.
+# --------------------------------------------------------------------------
+DEFAULT_NEWSLETTER_TYPES = [
+    {"code": "summary",   "name": "요약형",
+     "desc": "핵심 내용만 간결하게 요약하는 스타일"},
+    {"code": "trend",     "name": "트렌드분석형",
+     "desc": "최신 동향과 흐름을 분석하고 전망까지 담는 스타일"},
+    {"code": "practical", "name": "실무요약형",
+     "desc": "실무에 바로 활용할 수 있게 정리하는 스타일"},
+]
+
+
+def _create_newsletter_type_table() -> None:
+    """뉴스레터 생성 타입 테이블(newsletter_type)을 만듭니다. (IF NOT EXISTS)"""
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS newsletter_type ("
+                "  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '타입 ID',"
+                "  code        VARCHAR(50)  NOT NULL COMMENT '타입 코드(영문 슬러그)',"
+                "  name        VARCHAR(100) NOT NULL COMMENT '타입 표시명(예: 요약형)',"
+                "  description VARCHAR(500) NULL     COMMENT '작성 스타일 설명',"
+                "  is_active   TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '사용 여부(1:활성,0:비활성)',"
+                "  sort_order  INT          NOT NULL DEFAULT 0 COMMENT '정렬 순서',"
+                "  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '생성일시',"
+                "  updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP "
+                "              ON UPDATE CURRENT_TIMESTAMP COMMENT '수정일시',"
+                "  PRIMARY KEY (id),"
+                "  UNIQUE KEY uk_newsletter_type_code (code)"
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci "
+                "COMMENT='뉴스레터 생성 타입'"
+            )
+
+
+def _seed_newsletter_types() -> None:
+    """기본 생성 타입 중 '코드가 아직 없는 것'만 넣습니다."""
+    existing = {r["code"] for r in fetch_all("SELECT code FROM newsletter_type")}
+    added = []
+    for order, t in enumerate(DEFAULT_NEWSLETTER_TYPES):
+        if t["code"] in existing:
+            continue
+        execute(
+            "INSERT INTO newsletter_type (code, name, description, sort_order) "
+            "VALUES (%s, %s, %s, %s)",
+            (t["code"], t["name"], t["desc"], order),
+        )
+        added.append(t["name"])
+    if added:
+        print(f"[DB] 기본 생성 타입 추가: {', '.join(added)}")
+
+
+def list_newsletter_types(active_only: bool = False) -> list[dict]:
+    """뉴스레터 생성 타입 목록을 조회합니다."""
+    sql = "SELECT * FROM newsletter_type "
+    sql += "WHERE is_active = 1 " if active_only else ""
+    return fetch_all(sql + "ORDER BY sort_order, id")
+
+
+def create_newsletter_type(code: str, name: str,
+                           description: str | None = None, sort_order: int = 0) -> int:
+    """생성 타입을 추가하고 새 id 를 돌려줍니다. (code 중복 시 예외)"""
+    return execute(
+        "INSERT INTO newsletter_type (code, name, description, sort_order) "
+        "VALUES (%s, %s, %s, %s)",
+        (code, name, description, sort_order),
+    )
+
+
+def delete_newsletter_type(type_id: int) -> int:
+    """생성 타입 한 건을 삭제합니다."""
+    return execute("DELETE FROM newsletter_type WHERE id = %s", (type_id,))

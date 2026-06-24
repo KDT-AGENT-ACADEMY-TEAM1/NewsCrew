@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS newsletter (
     revision_count  INT             NOT NULL DEFAULT 0       COMMENT '재작성 횟수',
     status          VARCHAR(30)     NOT NULL DEFAULT 'reviewing' COMMENT '진행 상태 (researching/writing/reviewing/awaiting_approval/sent)',
     category_id     BIGINT UNSIGNED NULL                    COMMENT '연관 관심분야 ID (선택)',
+    news_type       VARCHAR(100)    NULL                    COMMENT '생성 타입명 (예: 요약형)',
     created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP                          COMMENT '생성일시',
     updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '수정일시',
     PRIMARY KEY (id),
