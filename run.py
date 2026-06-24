@@ -1,4 +1,4 @@
-"""맞춤형 뉴스레터 에이전트 — 화면(Streamlit) · 학습용 심플 버전.
+"""맞춤형 뉴스레터 에이전트 — 화면(Streamlit) · 학습용 심플 버전. v1
 
 이 파일은 '화면'만 담당합니다. 실제 일(리서치/작성/검수/발송)은
 app/graph.py 의 그래프가 합니다. 여기서는 그 그래프를 호출하고
@@ -428,6 +428,18 @@ def page_input():
                 key="cat_select",
                 placeholder="예: AI/기술 > 생성형 AI",
             )
+
+            # 선택한 카테고리의 키워드를 아래에 자동으로 보여 줍니다.
+            if labels:
+                kws = keywords_for_labels(labels, catalog)
+                chips = " ".join(
+                    f"<span class='badge s-reviewing'>{kw}</span>" for kw in kws)
+                st.markdown(
+                    f"<div style='margin:.2rem 0 .6rem;'>"
+                    f"<span style='opacity:.7;'>키워드:</span> {chips}</div>",
+                    unsafe_allow_html=True,
+                )
+
             if st.button("선택한 카테고리로 생성", disabled=not labels, use_container_width=True):
                 handle_category_submit(labels, catalog)
                 st.rerun()
