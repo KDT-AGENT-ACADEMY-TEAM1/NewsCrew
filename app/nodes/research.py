@@ -55,7 +55,7 @@ def research_node(state: NewsletterState) -> NewsletterState:
 
     ## Objective (목표)
     주어진 키워드 '{topic}'와 관련된 최신 동향을 조사해야 합니다.
-    반드시 제공된 검색 도구(search_news,search_stock 등)를 먼저 호출하여 최신 뉴스레터나 기사 데이터를 확보한 뒤 분석을 진행하세요.
+    반드시 제공된 검색 도구(search_news,search_stock 등)를 먼저 호출하여 최신 뉴스레터나 기사 데이터 주식데이타를 확보한 뒤 분석을 진행하세요.
 
     ## Instructions (지침)
     1. 정보 검색: 제공된 도구를 사용하여 정보를 검색하세요. 정보가 부족하면 도구를 여러 번 사용할 수 있습니다.
