@@ -85,7 +85,8 @@ def research_node(state: NewsletterState) -> NewsletterState:
     - 향후 예상되는 변화나 대응 방안
     
     **4. {topic} 관련회사 주가정보 **
-    - 
+    - 주가정보출력
+        - 회사이름 : 주가 형식으로 출력해줘
     """
 
         )
