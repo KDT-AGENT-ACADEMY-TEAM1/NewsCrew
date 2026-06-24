@@ -1,4 +1,4 @@
-"""맞춤형 뉴스레터 에이전트 — 화면(Streamlit) · 학습용 심플 버전.
+"""맞춤형 뉴스레터 에이전트 — 화면(Streamlit) · 학습용 심플 버전. v1
 
 이 파일은 '화면'만 담당합니다. 실제 일(리서치/작성/검수/발송)은
 app/graph.py 의 그래프가 합니다. 여기서는 그 그래프를 호출하고
@@ -18,6 +18,19 @@ import streamlit as st
 
 from app.llm import ask_ai       # LLM 호출 도우미 (키워드 추출에 사용)
 from app.graph import graph      # 실제 일을 하는 AI 그래프(백엔드)
+from app.db import execute, fetch_all, fetch_one   # 보고서 목록/상세/삭제 (DB: newsletter)
+from app.categories import (   # 관심 카테고리 (DB: interest_category)
+    create_category,
+    delete_category,
+    get_flat_categories,
+    keywords_for_labels,
+    list_categories,
+)
+from app.subscribers import (   # 메일링리스트 (DB: subscriber)
+    create_subscriber,
+    delete_subscriber,
+    list_subscribers,
+)
 
 
 # ==========================================================================
@@ -27,7 +40,7 @@ def setup_page():
     st.set_page_config(
         page_title="뉴스레터 에이전트 (학습용)",
         page_icon="📰",
-        layout="centered",   # 가운데 정렬. 넓게 쓰려면 "wide"
+        layout="wide",   # 넓게 사용 (가운데 정렬로 좁게 쓰려면 "centered")
     )
 
 
@@ -40,6 +53,31 @@ def inject_css():
                     max-width:80%; line-height:1.5; }
         .msg.user { background:#5681d0; color:#fff; margin-left:auto; }  /* 내 말 */
         .msg.bot  { background:#2a2a40; color:#eee; }                    /* AI 말  */
+
+        /* ---- 생성 결과 테이블 (라이트/다크 테마 모두 대응) ---- */
+        .rhead { font-weight:600; opacity:.65; padding:4px 8px; font-size:.85rem; }
+        .rcell { padding:2px 8px; font-size:.92rem; line-height:1.3;
+                 color:var(--text-color);
+                 white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .rcell.title { font-weight:600; }
+        .rcell.muted { opacity:.6; font-variant-numeric:tabular-nums; }
+        /* 행 전체를 가로지르는 구분선 (버튼 칸에서 끊기지 않게) */
+        .rdiv      { border:none; border-top:1px solid rgba(128,128,128,.28); margin:0; }
+        .rdiv.head { border-top:2px solid rgba(128,128,128,.5); }
+        /* 상태 뱃지 (자체 배경+흰 글자 → 어느 테마에서도 잘 보임) */
+        .badge { display:inline-block; padding:3px 11px; border-radius:999px;
+                 font-size:.78rem; font-weight:600; line-height:1.5; color:#fff; }
+        .badge.s-reviewing { background:#3b6fd4; }   /* 검수중   */
+        .badge.s-writing   { background:#e08a3c; }   /* 작성중   */
+        .badge.s-awaiting  { background:#caa11e; }   /* 승인대기 */
+        .badge.s-sent      { background:#2e9d63; }   /* 발송완료 */
+        .badge.s-default   { background:#6b7280; }
+
+        /* 생성 결과 테이블만 행 높이 컴팩트하게 (st.container(key="resulttbl")) */
+        .st-key-resulttbl [data-testid="stVerticalBlock"] { gap:.1rem; }
+        .st-key-resulttbl [data-testid="stHorizontalBlock"] { margin:0; }
+        .st-key-resulttbl .stButton > button {
+            padding:.05rem .5rem; min-height:0; line-height:1.4; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -60,8 +98,8 @@ def init_state():
     ss.setdefault("thread_id", None)                  # 현재 작업 ID
     ss.setdefault("snap", None)                        # AI가 만든 결과(초안 등)
     ss.setdefault("max_rev", 2)                        # 최대 재작성 횟수
-    ss.setdefault("subscribers", [])                   # 메일링리스트(구독자 이메일)
     ss.setdefault("reports", {})                        # 보고서 ID → 생성 결과(snap)
+    ss.setdefault("view_report", None)                  # 상세보기 중인 보고서 ID (None이면 목록)
     ss.setdefault("pending", None)                      # 생성 대기 중인 작업({"keywords": [...]}) — '작성중' 화면용
     ss.setdefault("menu", "📝 뉴스레터작성")             # 현재 선택된 메뉴(페이지) — PAGES 의 첫 키
 
@@ -231,6 +269,37 @@ def draft_title(draft: str) -> str:
     return "뉴스레터"
 
 
+# 그래프 status 코드 → 화면용 한글 라벨
+STATUS_LABELS = {
+    "researching": "리서치중",
+    "writing": "작성중",
+    "reviewing": "검수중",
+    "awaiting_approval": "승인대기",
+    "sent": "발송완료",
+}
+
+
+def status_label(status: str | None) -> str:
+    """상태 코드를 한글 표시명으로 바꿉니다. (모르는 값이면 그대로)"""
+    return STATUS_LABELS.get(status or "", status or "-")
+
+
+# 상태 코드 → 뱃지 CSS 클래스 (inject_css 의 .badge.s-* 와 짝)
+_STATUS_BADGE = {
+    "reviewing": "s-reviewing",
+    "writing": "s-writing",
+    "researching": "s-writing",
+    "awaiting_approval": "s-awaiting",
+    "sent": "s-sent",
+}
+
+
+def status_badge(status: str | None) -> str:
+    """상태를 색깔 뱃지(HTML)로 만듭니다."""
+    cls = _STATUS_BADGE.get(status or "", "s-default")
+    return f"<span class='badge {cls}'>{status_label(status)}</span>"
+
+
 def draft_excerpt(draft: str, length: int = 120) -> str:
     """초안에서 제목/소제목·빈 줄을 빼고 첫 본문 문장을 짧게 뽑아냅니다."""
     for line in draft.split("\n"):
@@ -266,14 +335,14 @@ def _read_state(thread_id: str) -> dict:
     }
 
 
-def run_pipeline(keywords: list[str], max_rev: int) -> dict:
+def run_pipeline(keywords: list[str], max_rev: int, category_id: int | None = None) -> dict:
     """키워드로 그래프를 처음부터 실행 → 리서치·작성·검수 후 '승인 대기'에서 멈춤."""
     thread_id = uuid.uuid4().hex[:12]              # 이번 작업의 새 ID
-    graph.invoke(
-        {"keywords": keywords, "revision_count": 0,
-         "max_revisions": max_rev, "status": "researching"},
-        _config(thread_id),
-    )
+    initial = {"keywords": keywords, "revision_count": 0,
+               "max_revisions": max_rev, "status": "researching"}
+    if category_id is not None:                    # 카테고리로 생성한 경우만 연결
+        initial["category_id"] = category_id
+    graph.invoke(initial, _config(thread_id))
     return _read_state(thread_id)
 
 
@@ -299,11 +368,13 @@ def reject(thread_id: str, feedback: str) -> dict:
 # 5) 화면(페이지) — 사용자 입력 + 채팅
 # ==========================================================================
 def open_report(report_id: str):
-    """보고서 ID로 결과를 불러와 '뉴스레터 생성 결과' 화면으로 이동합니다."""
+    """'더보기' → 해당 보고서의 '상세보기' 화면으로 바로 이동합니다."""
     snap = st.session_state.reports.get(report_id)
     if snap:
         st.session_state.snap = snap
         st.session_state.thread_id = report_id
+    # 이 보고서를 상세보기 대상으로 지정 → 생성 결과 화면이 목록 대신 상세를 보여줍니다.
+    st.session_state.view_report = report_id
     # 주의) 라디오(key="menu") 위젯이 이미 만들어진 뒤라 menu 를 직접 못 바꿉니다.
     #       '이동 예약(goto)'만 남기고, 다음 실행 때 위젯 생성 전에 적용합니다.
     st.session_state.goto = "📨 뉴스레터 생성 결과"
@@ -338,17 +409,47 @@ def page_input():
             f"'{kw}' 주제로 리서치 → 작성 → 검수를 진행하고 있어요 🛠️</div>",
             unsafe_allow_html=True,
         )
-        snap = run_pipeline(pending["keywords"], st.session_state.max_rev)
+        snap = run_pipeline(pending["keywords"], st.session_state.max_rev,
+                            pending.get("category_id"))
         push_report_message(snap, f"'{kw}' 뉴스레터를 만들었어요! 📰")
+
         st.session_state.pending = None
         st.rerun()   # '작성중' 카드를 결과 카드로 교체
 
-    # (2) 입력 폼 — 전송 버튼을 누르면 submitted 가 True 가 됩니다.
+    # (2) 관심 카테고리로 빠르게 만들기 — 고르고 버튼을 누르면 '생성요청 코멘트'가 자동으로 채팅에 올라갑니다.
+    with st.expander("📂 관심 카테고리로 만들기", expanded=False):
+        catalog = get_flat_categories()                  # DB(interest_category)에 등록된 카테고리만
+        if not catalog:
+            st.info("등록된 카테고리가 없습니다. DB(interest_category) 에 카테고리를 추가하면 여기에 표시됩니다.")
+        else:
+            labels = st.multiselect(
+                "카테고리 선택 (여러 개 가능)",
+                options=[row["label"] for row in catalog],
+                key="cat_select",
+                placeholder="예: AI/기술 > 생성형 AI",
+            )
+
+            # 선택한 카테고리의 키워드를 아래에 자동으로 보여 줍니다.
+            if labels:
+                kws = keywords_for_labels(labels, catalog)
+                chips = " ".join(
+                    f"<span class='badge s-reviewing'>{kw}</span>" for kw in kws)
+                st.markdown(
+                    f"<div style='margin:.2rem 0 .6rem;'>"
+                    f"<span style='opacity:.7;'>키워드:</span> {chips}</div>",
+                    unsafe_allow_html=True,
+                )
+
+            if st.button("선택한 카테고리로 생성", disabled=not labels, use_container_width=True):
+                handle_category_submit(labels, catalog)
+                st.rerun()
+
+    # (3) 직접 입력 폼 — 전송 버튼을 누르면 submitted 가 True 가 됩니다.
     with st.form("chat_form", clear_on_submit=True):
         prompt = st.text_input("메시지", placeholder="예: 전기차랑 배터리 소식 정리해줘")
         submitted = st.form_submit_button("전송")
 
-    # (3) 전송됐고 내용이 있으면 → AI 실행
+    # (4) 전송됐고 내용이 있으면 → AI 실행
     if submitted and prompt.strip():
         handle_submit(prompt.strip())
         st.rerun()   # 화면을 새로 그려 방금 대화를 반영
@@ -364,6 +465,9 @@ def push_report_message(snap: dict, intro: str):
     st.session_state.thread_id = report_id
     st.session_state.snap = snap
     st.session_state.reports[report_id] = snap
+    st.session_state.view_report = None   # 생성 결과 화면은 기본적으로 목록부터 보이게
+    # ※ DB 저장은 write 노드(app/nodes/write.py)가 그래프 안에서 자동으로 합니다.
+
     draft = snap["draft"]
     score = snap.get("review", {}).get("score", "-")
     st.session_state.messages.append({
@@ -371,7 +475,8 @@ def push_report_message(snap: dict, intro: str):
         "report_id": report_id,
         "content": (
             f"{intro}<br>"
-            f"<b>{draft_title(draft)}</b> · 검수 {score}점<br>"
+            f"<b>{draft_title(draft)}</b> · 검수 {score}점 "
+            f"· 상태: {status_label(snap.get('status'))}<br>"
             f"<span style='color:#bcd;'>{draft_excerpt(draft)}</span> "
             f"<span style='color:#8ab4ff;'>더보기</span>"
         ),
@@ -393,6 +498,27 @@ def handle_submit(prompt: str):
     # 3. 실제 생성은 '다음 rerun'에서 실행합니다. (여기서 바로 돌리면 '작성중' 화면을 못 보여 줌)
     #    pending 만 예약해 두면, page_input() 이 '작성중' 카드를 먼저 그린 뒤 생성을 실행합니다.
     st.session_state.pending = {"keywords": keywords}
+
+
+def handle_category_submit(labels: list[str], catalog: list[dict]):
+    """선택한 카테고리로 '생성요청 코멘트'를 자동 작성해 채팅에 올리고 생성을 예약합니다.
+
+    카테고리는 키워드가 이미 정해져 있으므로 extract_keywords(추출) 없이 바로 씁니다.
+    """
+    keywords = keywords_for_labels(labels, catalog)
+    if not keywords:
+        return
+
+    # 선택한 카테고리(첫 번째)를 이 보고서의 관심분야로 연결합니다.
+    by_label = {row["label"]: row["id"] for row in catalog}
+    category_id = by_label.get(labels[0]) if labels else None
+
+    # 자동 생성된 요청 코멘트 (사용자가 직접 친 것처럼 채팅에 올라갑니다)
+    comment = f"[{', '.join(labels)}] 관련 최신 소식으로 뉴스레터 만들어줘"
+    st.session_state.messages.append({"role": "user", "content": comment})
+
+    # 작성중 화면 → 생성 → 결과 (직접 입력과 동일한 흐름)
+    st.session_state.pending = {"keywords": keywords, "category_id": category_id}
 
 
 def handle_reject_to_chat(thread_id: str, feedback: str):
@@ -417,36 +543,171 @@ def handle_reject_to_chat(thread_id: str, feedback: str):
 # ==========================================================================
 def page_result():
     st.markdown("## 📨 생성 결과")
-    snap = st.session_state.snap
+    # 상세보기 대상이 지정돼 있으면 상세 화면, 아니면 목록(테이블) 화면을 보여 줍니다.
+    if st.session_state.view_report:
+        _result_detail(st.session_state.view_report)
+    else:
+        _result_list()
 
-    if not snap:
-        st.info("아직 만든 초안이 없습니다. '사용자 입력'에서 먼저 생성하세요.")
+
+def _result_list():
+    """생성된 보고서들을 DB(newsletter)에서 읽어 '테이블'로 보여 줍니다.
+
+    상단에서 관심 카테고리로 필터링할 수 있습니다.
+    컬럼: 작성일 · 관심영역 · 메일내용(짧게) · 상태 · 점수 · 관리
+    """
+    # (1) 카테고리 필터
+    catalog = get_flat_categories()                       # interest_category 의 활성 분야
+    label_to_id = {row["label"]: row["id"] for row in catalog}
+    choice = st.selectbox("관심 카테고리 필터", ["전체"] + list(label_to_id.keys()),
+                          key="result_filter")
+
+    # (2) 필터 조건에 맞춰 조회 (관심분야명은 join 으로)
+    sql = (
+        "SELECT n.thread_id, n.title, n.draft, n.status, n.review_score, n.created_at, "
+        "       c.name AS category "
+        "FROM newsletter n "
+        "LEFT JOIN interest_category c ON c.id = n.category_id "
+    )
+    try:
+        if choice != "전체":
+            rows = fetch_all(sql + "WHERE n.category_id = %s ORDER BY n.created_at DESC, n.id DESC",
+                             (label_to_id[choice],))
+        else:
+            rows = fetch_all(sql + "ORDER BY n.created_at DESC, n.id DESC")
+    except Exception as e:
+        st.error(f"DB 연결에 실패했습니다: {e}")
         return
 
-    # (1) 상태 + 초안 본문 보여주기
-    st.write(f"상태: **{snap['status']}** · 재작성 {snap['revision_count']}회")
-    st.markdown(md_to_html(snap["draft"]), unsafe_allow_html=True)
+    if not rows:
+        msg = "아직 생성된 보고서가 없습니다. '뉴스레터작성'에서 먼저 생성하세요." \
+            if choice == "전체" else "이 카테고리로 생성된 보고서가 없습니다."
+        st.info(msg)
+        return
+
+    st.caption(f"총 {len(rows)}건 · '상세보기'로 본문 확인 및 승인/반려할 수 있어요.")
+
+    # keyed 컨테이너로 감싸 '이 테이블에만' 컴팩트 CSS(inject_css 의 .st-key-resulttbl)를 적용.
+    with st.container(key="resulttbl"):
+        # 표 헤더:  작성일 · 관심영역 · 메일내용 · 상태 · 점수 · 관리(상세/삭제)
+        widths = [1.7, 1.7, 3.2, 1.3, 0.7, 1.3, 0.7]
+        headers = ["작성일", "관심영역", "메일내용", "상태", "점수", "관리", ""]
+        head = st.columns(widths, vertical_alignment="center")
+        for col, title in zip(head, headers):
+            col.markdown(f"<div class='rhead'>{title}</div>", unsafe_allow_html=True)
+        st.markdown("<hr class='rdiv head'>", unsafe_allow_html=True)   # 헤더 아래 굵은 선
+
+        # 표 본문 (한 행씩)
+        for r in rows:
+            c = st.columns(widths, vertical_alignment="center")
+            created = str(r["created_at"])[:16]              # YYYY-MM-DD HH:MM
+            category = r["category"] or "직접입력"
+            excerpt = draft_excerpt(r["draft"] or "", 50) or "-"
+            score = r["review_score"]
+            score_txt = score if score is not None else "–"
+            c[0].markdown(f"<div class='rcell muted'>{created}</div>", unsafe_allow_html=True)
+            c[1].markdown(f"<div class='rcell'>{category}</div>", unsafe_allow_html=True)
+            c[2].markdown(f"<div class='rcell'>{excerpt}</div>", unsafe_allow_html=True)
+            c[3].markdown(f"<div class='rcell'>{status_badge(r['status'])}</div>", unsafe_allow_html=True)
+            c[4].markdown(f"<div class='rcell muted'>{score_txt}</div>", unsafe_allow_html=True)
+            if c[5].button("상세보기", key=f"view_{r['thread_id']}", use_container_width=True):
+                st.session_state.view_report = r["thread_id"]
+                st.rerun()
+            if c[6].button("🗑️", key=f"del_{r['thread_id']}", help="삭제", use_container_width=True):
+                _delete_report(r["thread_id"])
+                st.rerun()
+            st.markdown("<hr class='rdiv'>", unsafe_allow_html=True)    # 행 구분선(가로 전체)
+
+
+def _delete_report(thread_id: str):
+    """보고서 한 건을 DB(newsletter)에서 삭제하고, 화면 상태도 정리합니다."""
+    try:
+        execute("DELETE FROM newsletter WHERE thread_id = %s", (thread_id,))
+    except Exception as e:
+        st.error(f"삭제 실패: {e}")
+        return
+    # 메모리 캐시 / 보던 상세 화면도 함께 정리
+    st.session_state.reports.pop(thread_id, None)
+    if st.session_state.view_report == thread_id:
+        st.session_state.view_report = None
+
+
+def _load_report(thread_id: str) -> dict | None:
+    """상세보기용 보고서 데이터를 가져옵니다.
+
+    - 이번 세션에서 만든 보고서면 그래프 상태(_read_state)를 써서 승인/반려까지 가능.
+    - 과거(다른 세션) 보고서면 그래프 상태가 없으므로 DB(newsletter)에서 읽어 '읽기 전용'으로.
+    """
+    state = graph.get_state(_config(thread_id))
+    if state.values:                       # 이번 세션 그래프에 살아 있는 작업
+        snap = _read_state(thread_id)
+        snap["_live"] = True
+        return snap
+
+    row = fetch_one(
+        "SELECT thread_id, title, draft, status, review_score, review_feedback, revision_count "
+        "FROM newsletter WHERE thread_id = %s",
+        (thread_id,),
+    )
+    if not row:
+        return None
+    return {
+        "thread_id": row["thread_id"],
+        "status": row["status"],
+        "draft": row["draft"] or "",
+        "review": {"score": row["review_score"], "feedback": row["review_feedback"]},
+        "revision_count": row["revision_count"] or 0,
+        "awaiting_approval": False,
+        "_live": False,                    # 읽기 전용 (승인/반려 불가)
+    }
+
+
+def _result_detail(thread_id: str):
+    """보고서 하나의 본문 + 승인/반려 화면."""
+    snap = _load_report(thread_id)
+
+    # 목록으로 돌아가기
+    if st.button("← 목록으로"):
+        st.session_state.view_report = None
+        st.rerun()
+
+    if not snap:
+        st.warning("보고서를 찾을 수 없습니다.")
+        return
+
+    st.session_state.thread_id = thread_id
+    st.session_state.snap = snap
+
+    # (1) 상태 + 초안 본문 (상태는 색깔 뱃지로)
+    st.markdown(
+        f"상태: {status_badge(snap.get('status'))} "
+        f"<span style='color:#8a93a6;'>· 재작성 {snap.get('revision_count', 0)}회</span>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(md_to_html(snap.get("draft", "")), unsafe_allow_html=True)
 
     # 검수 코멘트가 있으면 함께 표시
-    review = snap.get("review", {})
+    review = snap.get("review") or {}
     if review.get("feedback"):
         st.caption(f"🧾 검수 코멘트: {review['feedback']} (점수 {review.get('score')})")
 
-    # (2) 아직 승인 대기 중이면 → 승인 / 반려 버튼
-    if snap.get("awaiting_approval") and snap["status"] != "sent":
+    # (2) 이번 세션 작업이고 승인 대기 중이면 → 승인 / 반려 버튼
+    if snap.get("_live") and snap.get("awaiting_approval") and snap["status"] != "sent":
         feedback = st.text_input("반려 시 수정 요청(선택)", placeholder="예: 더 짧고 캐주얼하게")
         c1, c2 = st.columns(2)
 
         if c1.button("✅ 승인 → 발송", use_container_width=True):
-            st.session_state.snap = approve(st.session_state.thread_id)
+            st.session_state.snap = approve(thread_id)
             st.rerun()
 
         if c2.button("↩️ 반려 → 재작성", use_container_width=True):
             # 수정 요청 문구를 채팅창으로 가져가 재작성합니다.
-            handle_reject_to_chat(st.session_state.thread_id, feedback.strip())
+            handle_reject_to_chat(thread_id, feedback.strip())
 
-    elif snap["status"] == "sent":
+    elif snap.get("status") == "sent":
         st.success("✅ 발송 완료!")
+    elif not snap.get("_live"):
+        st.caption("ℹ️ 이전 세션에서 생성된 보고서라 읽기 전용입니다. (승인/반려는 이번 세션에서 만든 보고서만 가능)")
 
 
 # ==========================================================================
@@ -459,39 +720,147 @@ def _valid_email(email: str) -> bool:
 
 def userlists():
     st.markdown("## 📨 메일링리스트")
-    st.caption("뉴스레터를 받을 구독자 이메일을 관리합니다.")
+    st.caption("뉴스레터를 받을 구독자와 관심분야를 관리합니다. (DB: subscriber)")
 
-    subs = st.session_state.subscribers
+    # DB에서 구독자 + 관심분야 옵션을 읽습니다. (실패 시 안내 후 종료)
+    try:
+        subs = list_subscribers()
+    except Exception as e:
+        st.error(f"DB 연결에 실패했습니다: {e}")
+        st.caption("app/db.py 의 접속 정보를 확인하고, schema.sql 로 테이블을 만들었는지 확인하세요.")
+        return
 
-    # (1) 새 구독자 추가 폼
+    catalog = get_flat_categories()                       # 활성 카테고리 (id 포함)
+    label_to_id = {row["label"]: row["id"] for row in catalog}
+
+    # (1) 새 구독자 추가 폼 — 이메일 + 관심분야(여러 개) 선택
     with st.form("add_sub_form", clear_on_submit=True):
-        email = st.text_input("구독자 이메일", placeholder="예: reader@example.com")
+        email = st.text_input("구독자 이메일 *", placeholder="예: reader@example.com")
+        name = st.text_input("이름(선택)", placeholder="예: 홍길동")
+        picked = st.multiselect(
+            "관심분야 선택 (여러 개 가능)",
+            options=list(label_to_id.keys()),
+            placeholder="예: AI/기술 > 생성형 AI",
+        )
         added = st.form_submit_button("➕ 추가")
 
     if added:
-        email = email.strip().lower()
-        if not _valid_email(email):
+        em = email.strip().lower()
+        if not _valid_email(em):
             st.warning("올바른 이메일 형식이 아닙니다.")
-        elif email in subs:
-            st.info("이미 등록된 이메일입니다.")
         else:
-            subs.append(email)
-            st.success(f"{email} 추가됨!")
-            st.rerun()
+            try:
+                create_subscriber(
+                    email=em,
+                    name=name.strip() or None,
+                    category_ids=[label_to_id[label] for label in picked],
+                )
+                st.success(f"{em} 추가됨!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"추가 실패 (이메일 중복 등 확인): {e}")
 
     st.divider()
 
     # (2) 등록된 구독자 목록 + 삭제 버튼
     if not subs:
-        st.info("아직 등록된 구독자가 없습니다. 위에서 이메일을 추가하세요.")
+        st.info("아직 등록된 구독자가 없습니다. 위에서 추가하세요.")
         return
 
     st.write(f"총 **{len(subs)}명** 구독 중")
-    for i, email in enumerate(subs):
-        c1, c2 = st.columns([5, 1])
-        c1.write(f"{i + 1}. {email}")
-        if c2.button("🗑️", key=f"del_{i}", help="삭제"):
-            subs.pop(i)
+    for s in subs:
+        c1, c2 = st.columns([6, 1])
+        nm = f" ({s['name']})" if s.get("name") else ""
+        cats = s.get("categories") or "관심분야 미선택"
+        c1.markdown(
+            f"**{s['email']}**{nm}<br>"
+            f"<span style='color:#9ab;'>관심분야: {cats}</span>",
+            unsafe_allow_html=True,
+        )
+        if c2.button("🗑️", key=f"delsub_{s['id']}", help="삭제"):
+            delete_subscriber(s["id"])
+            st.rerun()
+
+
+# ==========================================================================
+# 6-3) 화면(페이지) — 카테고리 등록 (DB: interest_category)
+# ==========================================================================
+def _parse_keywords_input(text: str) -> list[str]:
+    """입력창의 '쉼표/줄바꿈으로 구분한 키워드'를 리스트로 바꿉니다. (중복/공백 제거)"""
+    keywords: list[str] = []
+    for part in text.replace("\n", ",").split(","):
+        kw = part.strip()
+        if kw and kw not in keywords:
+            keywords.append(kw)
+    return keywords
+
+
+def page_categories():
+    st.markdown("## 🗂️ 카테고리 등록")
+    st.caption("뉴스레터 관심분야(interest_category)를 추가/삭제합니다. DB에 바로 반영됩니다.")
+
+    # DB에서 현재 카테고리 목록을 읽습니다. (실패하면 안내 후 종료)
+    try:
+        cats = list_categories()
+    except Exception as e:
+        st.error(f"DB 연결에 실패했습니다: {e}")
+        st.caption("app/db.py 의 접속 정보(mydatabase / root)를 확인하세요.")
+        return
+
+    # 상위 분야 선택용 옵션 ('(없음)' + 기존 카테고리들)
+    parent_options = {"(없음 - 최상위 분야)": None}
+    for c in cats:
+        parent_options[f"{c['name']} (#{c['id']})"] = c["id"]
+
+    # (1) 새 카테고리 추가 폼
+    with st.form("add_category_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        name = col1.text_input("분야 표시명 *", placeholder="예: AI/기술")
+        code = col2.text_input("분야 코드 * (영문 슬러그)", placeholder="예: ai_tech")
+        keywords_text = st.text_input(
+            "키워드 (쉼표로 구분)", placeholder="예: LLM, AI 에이전트, 반도체")
+        col3, col4 = st.columns(2)
+        parent_label = col3.selectbox("상위 분야", list(parent_options.keys()))
+        sort_order = col4.number_input("정렬 순서", min_value=0, value=0, step=1)
+        submitted = st.form_submit_button("➕ 카테고리 추가")
+
+    if submitted:
+        if not name.strip() or not code.strip():
+            st.warning("표시명과 코드는 필수입니다.")
+        else:
+            try:
+                create_category(
+                    code=code.strip(),
+                    name=name.strip(),
+                    keywords=_parse_keywords_input(keywords_text),
+                    parent_id=parent_options[parent_label],
+                    sort_order=int(sort_order),
+                )
+                st.success(f"'{name.strip()}' 카테고리를 추가했습니다!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"추가 실패 (코드 중복 등 확인): {e}")
+
+    st.divider()
+
+    # (2) 등록된 카테고리 목록 + 삭제 버튼
+    if not cats:
+        st.info("아직 등록된 카테고리가 없습니다. 위에서 추가하세요.")
+        return
+
+    st.write(f"총 **{len(cats)}개** 등록됨")
+    for c in cats:
+        c1, c2 = st.columns([6, 1])
+        parent = f" · 상위: {c['parent_name']}" if c.get("parent_name") else ""
+        kw = ", ".join(c["keywords"]) if c["keywords"] else "-"
+        active = "" if c["is_active"] else " · ⛔비활성"
+        c1.markdown(
+            f"**{c['name']}** `{c['code']}`{parent}{active}<br>"
+            f"<span style='color:#9ab;'>키워드: {kw}</span>",
+            unsafe_allow_html=True,
+        )
+        if c2.button("🗑️", key=f"delcat_{c['id']}", help="삭제"):
+            delete_category(c["id"])
             st.rerun()
 
 
@@ -502,6 +871,7 @@ def userlists():
 PAGES = {
     "📝 뉴스레터작성": page_input,
     "📨 뉴스레터 생성 결과": page_result,
+    "🗂️ 카테고리 등록": page_categories,
     "📨 메일링리스트": userlists,
 }
 
