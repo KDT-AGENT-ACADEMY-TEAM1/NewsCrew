@@ -11,14 +11,14 @@ from dotenv import load_dotenv
 
 search_web = TavilySearch(
         tavily_api_key="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",
-        max_results=5,
+        max_results=10,
         topic="news",
         include_answer=True,
         include_raw_content=False,
         include_images=False,
         search_depth="advanced"
     )
-#def _get_reseach(topic:str):
+
   
 
 
@@ -35,13 +35,13 @@ def search_news(topic: str) -> str:
     # 결과 요약
 
     summary = f"'{topic}' 관련 최신 뉴스 요약:\n\n"
-    for i, result in enumerate(result_news['results'][:3], 1):
+    for i, result in enumerate(result_news['results'][:7], 1):
         title = result.get('title', '제목 없음')
         content = result.get('content', '내용 없음')
         url = result.get('url', '')
         
         summary += f"{i}. {title}\n"
-        summary += f"   {content[:100]}...\n"
+        summary += f"   {content}...\n"
         summary += f"   {url}\n\n"
    
     return summary
