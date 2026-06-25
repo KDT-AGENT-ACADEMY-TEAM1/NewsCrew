@@ -1,22 +1,58 @@
-
 services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: newscrew-app
+    init: true
+    restart: always
+    depends_on:
+      mysql:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: 1234
+      DB_NAME: mydatabase
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      API_BASE: http://127.0.0.1:8000
+      CHROMA_DB_DIR: /app/.chroma
+      RAG_SOURCE_FILE: /app/data/company_vector_seed_kr_listed_20.txt
+      TZ: Asia/Seoul
+    ports:
+      - "8000:8000"
+      - "8501:8501"
+    volumes:
+      - chroma_data:/app/.chroma
+
   mysql:
     image: mysql:8.0
     container_name: mysql-container
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: 1234       # 루트(root) 비밀번호 (필수)
-      MYSQL_DATABASE: mydatabase              # 컨테이너 실행 시 자동 생성될 데이터베이스 이름 (선택)
-      MYSQL_USER: dbuser                      # 추가로 생성할 사용자 계정 (선택)
-      MYSQL_PASSWORD: dbpassword              # 사용자 계정의 비밀번호 (선택)
-      TZ: Asia/Seoul                          # 한국 시간대 설정
+      MYSQL_ROOT_PASSWORD: 1234
+      MYSQL_DATABASE: mydatabase
+      MYSQL_USER: dbuser
+      MYSQL_PASSWORD: dbpassword
+      TZ: Asia/Seoul
     ports:
       - "3306:3306"
     volumes:
-      - mysql_data:/var/lib/mysql             # 데이터를 지워지지 않게 영구 저장
+      - mysql_data:/var/lib/mysql
     command:
-      - --character-set-server=utf8mb4        # 한글 및 이모지 깨짐 방지
+      - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p1234"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
 volumes:
   mysql_data:
+  chroma_data:

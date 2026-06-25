@@ -1,0 +1,15 @@
+chromadb
+fastapi
+langchain-core
+langchain-google-genai
+langchain-openai
+langchain-tavily
+langgraph
+openai
+pydantic
+pymysql
+python-dotenv
+pyyaml
+requests
+streamlit
+uvicorn[standard]
