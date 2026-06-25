@@ -550,6 +550,24 @@ def delete_review_checklist_item(item_id: int) -> int:
     return execute("DELETE FROM review_checklist WHERE id = %s", (item_id,))
 
 
+def replace_review_checklist(labels: list[str]) -> int:
+    """기본 검수 체크리스트를 줄 단위 목록으로 통째로 갱신합니다."""
+    cleaned: list[str] = []
+    for label in labels or []:
+        s = (label or "").strip()
+        if s and s not in cleaned:
+            cleaned.append(s)
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM review_checklist")
+            for i, label in enumerate(cleaned):
+                cur.execute(
+                    "INSERT INTO review_checklist (label, sort_order) VALUES (%s, %s)",
+                    (label, i),
+                )
+    return len(cleaned)
+
+
 def get_default_review_checkpoints() -> list[str]:
     """활성 기본 검수 체크포인트 문구 목록."""
     rows = list_review_checklist(active_only=True)
