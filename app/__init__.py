@@ -10,6 +10,6 @@ load_dotenv(override=True)
 
 from .db import init_db   # noqa: E402  (.env 로드 후에 import)
 
-init_db()
+#init_db()
 
 
