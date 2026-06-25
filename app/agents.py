@@ -21,7 +21,7 @@ from .nodes.review import review_node
 from .nodes.send import send_node
 from .nodes.tools import tools_node
 from .nodes.write import write_node
-from .tools import TOOLS_LIST, TOOLS_MAP, search_news, search_stock
+from .tools import TOOLS_LIST, TOOLS_MAP, search_news, search_stock,search_rag
 
 __all__ = [
     # LLM
