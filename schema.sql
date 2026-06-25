@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS interest_category (
     name            VARCHAR(100)    NOT NULL                COMMENT '분야 표시명 (예: AI/기술)',
     description     VARCHAR(500)    NULL                    COMMENT '분야 설명',
     keywords        JSON            NULL                    COMMENT '콘텐츠 수집·필터링용 키워드 배열 (예: ["LLM","에이전트"])',
+    checkpoints     JSON            NULL                    COMMENT '검수용 주요 체크포인트 배열 (LLM 주제별 체크에 사용)',
     sort_order      INT             NOT NULL DEFAULT 0       COMMENT '정렬 순서',
     is_active       TINYINT(1)      NOT NULL DEFAULT 1       COMMENT '사용 여부 (1:활성, 0:비활성)',
     created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP                          COMMENT '생성일시',
@@ -130,6 +131,36 @@ CREATE TABLE IF NOT EXISTS app_setting (
 -- 뉴스레터 생성 타입 (요약형 / 트렌드분석형 / 실무요약형 …)
 --   기본값은 app/db.py 의 _seed_newsletter_types() 가 넣습니다.
 -- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS email_template (
+    id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '템플릿 ID',
+    code        VARCHAR(50)  NOT NULL                COMMENT '템플릿 코드(영문 슬러그)',
+    name        VARCHAR(100) NOT NULL                COMMENT '템플릿 표시명',
+    html        MEDIUMTEXT   NULL                    COMMENT '템플릿 HTML ({{subject}}, {{body}}, {{unsubscribe_url}} 치환)',
+    is_active   TINYINT(1)   NOT NULL DEFAULT 1      COMMENT '사용 여부',
+    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '생성일시',
+    updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '수정일시',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_email_template_code (code)
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci
+  COMMENT='이메일 발송 템플릿';
+
+
+CREATE TABLE IF NOT EXISTS newsletter_send (
+    id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '발송 로그 ID',
+    thread_id   VARCHAR(64)  NOT NULL                COMMENT '보고서 thread_id',
+    email       VARCHAR(255) NOT NULL                COMMENT '수신자 이메일',
+    name        VARCHAR(100) NULL                    COMMENT '수신자 이름',
+    sent_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '발송일시',
+    PRIMARY KEY (id),
+    KEY idx_newsletter_send_thread (thread_id)
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci
+  COMMENT='뉴스레터 발송 이력';
+
+
 CREATE TABLE IF NOT EXISTS newsletter_type (
     id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '타입 ID',
     code        VARCHAR(50)  NOT NULL                COMMENT '타입 코드(영문 슬러그)',
