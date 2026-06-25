@@ -15,7 +15,6 @@ from pydantic import BaseModel
 
 from . import categories as cat
 from . import db
-from . import knowledge
 from . import mailer
 from . import subscribers as sub
 from .graph import graph
@@ -446,27 +445,6 @@ def api_newsletters_status(thread_id: str, b: StatusIn):
 @app.delete("/newsletters/{thread_id}")
 def api_newsletters_delete(thread_id: str):
     return {"deleted": db.execute("DELETE FROM newsletter WHERE thread_id = %s", (thread_id,))}
-
-
-# ==========================================================================
-# 내부 자료 (Chroma 벡터DB)
-# ==========================================================================
-@app.get("/knowledge/status")
-def api_knowledge_status():
-    """색인된 내부자료 조각 수 + 내부 자료 검색 미리보기용 상태."""
-    return {"count": knowledge.count(), "dirs": ["data/관련규정", "data/관련자료"]}
-
-
-@app.post("/knowledge/reindex")
-def api_knowledge_reindex():
-    """내부 자료를 다시 읽어 재색인합니다(force)."""
-    return {"count": knowledge.init_chroma(force=True)}
-
-
-@app.get("/knowledge/search")
-def api_knowledge_search(q: str, k: int = 3):
-    """내부 자료 검색 (미리보기/확인용)."""
-    return knowledge.search(q, k)
 
 
 @app.get("/")
