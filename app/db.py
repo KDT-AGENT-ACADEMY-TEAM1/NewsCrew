@@ -200,15 +200,29 @@ def init_db() -> None:
 
     DB가 꺼져 있거나 권한이 없어도 앱이 죽지 않도록 예외를 삼킵니다(best-effort).
     """
+    cfg = _db_config()
+    print("=" * 60)
+    print("[DB] 데이터베이스 초기화 시작")
+    print(f"[DB] 접속 대상: {cfg['host']}:{cfg['port']}/{cfg['database']} (user={cfg['user']})")
     try:
         _create_tables_if_missing()    # schema.sql 의 모든 CREATE TABLE 실행
+        print("[DB] (1/7) 테이블 확인/생성 완료")
         _ensure_newsletter_columns()   # 기존 DB 호환: 빠진 컬럼 보강
+        print("[DB] (2/7) 컬럼 보강 확인 완료")
         _seed_default_categories()     # 기본 카테고리
+        print("[DB] (3/7) 카테고리 시드 완료")
         _seed_settings()               # 환경설정 기본값
+        print("[DB] (4/7) 환경설정 시드 완료")
         _seed_newsletter_types()       # 생성 타입 기본값
+        print("[DB] (5/7) 생성 타입 시드 완료")
         _seed_subscribers()            # 기본 구독자(메일링리스트)
+        print("[DB] (6/7) 구독자 시드 완료")
+        _seed_templates()              # 기본 이메일 템플릿
+        print("[DB] (7/7) 이메일 템플릿 시드 완료")
+        print("[DB] ✅ 데이터베이스 초기화 완료")
     except Exception as e:
-        print(f"[DB] 초기화 건너뜀(연결/권한 확인): {e}")
+        print(f"[DB] ❌ 초기화 건너뜀(연결/권한 확인): {e}")
+    print("=" * 60)
 
 
 def _create_tables_if_missing() -> None:
@@ -218,10 +232,32 @@ def _create_tables_if_missing() -> None:
         sql = f.read()
     # ';' 로 나눠 'CREATE TABLE' 이 든 문장만 실행 (schema.sql 은 IF NOT EXISTS 라 안전)
     statements = [s.strip() for s in sql.split(";") if "CREATE TABLE" in s.upper()]
+    created, checked = 0, 0
     with connection() as conn:
         with conn.cursor() as cur:
             for stmt in statements:
+                name = _table_name_of(stmt)
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM information_schema.tables "
+                    "WHERE table_schema = DATABASE() AND table_name = %s", (name,))
+                existed = (cur.fetchone() or {}).get("n", 0) > 0
                 cur.execute(stmt)
+                if existed:
+                    checked += 1
+                    print(f"[DB]   - {name}: 확인(이미 있음)")
+                else:
+                    created += 1
+                    print(f"[DB]   - {name}: 🆕 새로 생성")
+    print(f"[DB]   테이블 총 {len(statements)}개 (생성 {created} / 기존 {checked})")
+
+
+def _table_name_of(stmt: str) -> str:
+    """CREATE TABLE 문에서 테이블 이름만 뽑아냅니다. (주석의 'IF NOT EXISTS' 에 속지 않도록 CREATE TABLE 기준)"""
+    idx = stmt.upper().find("CREATE TABLE")
+    rest = stmt[idx + len("CREATE TABLE"):].strip() if idx >= 0 else stmt.strip()
+    if rest.upper().startswith("IF NOT EXISTS"):
+        rest = rest[len("IF NOT EXISTS"):].strip()
+    return rest.split("(")[0].split()[0].strip("`\" ")
 
 
 def _column_missing(table: str, column: str) -> bool:
@@ -270,7 +306,7 @@ def _seed_default_categories() -> None:
                 order,
             ),
         )
-    print(f"[DB] 기본 카테고리 {len(DEFAULT_CATEGORIES)}개 동기화 완료(체크포인트 포함)")
+    print(f"[DB]   카테고리: {len(DEFAULT_CATEGORIES)}개 동기화(키워드·체크포인트 갱신)")
 
 
 # --------------------------------------------------------------------------
@@ -287,6 +323,9 @@ DEFAULT_SETTINGS = [
     {"key": "auto_send",     "value": "0",  "type": "bool",
      "label": "자동 발송",
      "desc": "검수 통과 시 사람 승인 없이 바로 발송 (1=켜기, 0=끄기)"},
+    {"key": "default_template_code", "value": "default", "type": "template",
+     "label": "기본 이메일 템플릿",
+     "desc": "발송 시 기본으로 선택될 이메일 템플릿"},
 ]
 
 
@@ -304,8 +343,8 @@ def _seed_settings() -> None:
             (s["key"], s["value"], s["type"], s["label"], s["desc"], order),
         )
         added.append(s["label"])
-    if added:
-        print(f"[DB] 기본 환경설정 추가: {', '.join(added)}")
+    print(f"[DB]   환경설정: 추가 {len(added)}개 / 기존 {len(existing)}개"
+          + (f" (추가: {', '.join(added)})" if added else ""))
 
 
 def get_settings() -> list[dict]:
@@ -370,8 +409,8 @@ def _seed_newsletter_types() -> None:
             (t["code"], t["name"], t["desc"], order),
         )
         added.append(t["name"])
-    if added:
-        print(f"[DB] 기본 생성 타입 추가: {', '.join(added)}")
+    print(f"[DB]   생성 타입: 추가 {len(added)}개 / 기존 {len(existing)}개"
+          + (f" (추가: {', '.join(added)})" if added else ""))
 
 
 def list_newsletter_types(active_only: bool = False) -> list[dict]:
@@ -437,5 +476,84 @@ def _seed_subscribers() -> None:
                         (sub_id, cat_id),
                     )
         added.append(s["name"])
-    if added:
-        print(f"[DB] 기본 구독자 추가: {', '.join(added)}")
+    print(f"[DB]   구독자: 추가 {len(added)}명 / 기존 {len(existing)}명"
+          + (f" (추가: {', '.join(added)})" if added else ""))
+
+
+# --------------------------------------------------------------------------
+# 이메일 발송 템플릿 (email_template)
+#   템플릿 HTML 안의 {{subject}} {{body}} {{unsubscribe_url}} 가 발송 시 치환됩니다.
+# --------------------------------------------------------------------------
+_TPL_DEFAULT = """<div style="background:#eef1f5; padding:24px 12px; font-family:'Apple SD Gothic Neo','Malgun Gothic',Helvetica,Arial,sans-serif;">
+<div style="max-width:640px; margin:0 auto; background:#ffffff; border-radius:14px; overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,.08);">
+<div style="background:linear-gradient(135deg,#5681d0,#3b6fd4); padding:30px 34px; color:#ffffff;">
+<div style="font-size:12px; letter-spacing:1.5px; opacity:.85;">📰 NEWSLETTER</div>
+<div style="font-size:23px; font-weight:700; margin-top:8px; line-height:1.35;">{{subject}}</div>
+</div>
+<div style="padding:30px 34px;">{{body}}</div>
+<div style="padding:18px 34px; background:#fafbfc; color:#9aa0a6; font-size:12px; border-top:1px solid #eef0f4; line-height:1.7;">
+본 메일은 관심분야를 구독하신 분께 자동 발송되었습니다.<br>
+ⓒ <strong style="color:#5a6066;">NewsCrew 팀</strong> · <a href="{{unsubscribe_url}}" style="color:#5681d0; text-decoration:underline;">구독취소</a>
+</div></div></div>"""
+
+_TPL_MINIMAL = """<div style="max-width:600px; margin:0 auto; padding:28px 24px; font-family:'Malgun Gothic',Arial,sans-serif; color:#222;">
+<h1 style="font-size:22px; margin:0; border-bottom:3px solid #222; padding-bottom:12px;">{{subject}}</h1>
+<div style="margin-top:18px;">{{body}}</div>
+<hr style="margin-top:28px; border:none; border-top:1px solid #ddd;">
+<p style="font-size:12px; color:#999;">ⓒ NewsCrew 팀 · <a href="{{unsubscribe_url}}" style="color:#666;">구독취소</a></p>
+</div>"""
+
+_TPL_DARK = """<div style="background:#0f1117; padding:24px 12px; font-family:'Apple SD Gothic Neo','Malgun Gothic',Arial,sans-serif;">
+<div style="max-width:640px; margin:0 auto; background:#1b1e27; border-radius:14px; overflow:hidden; border:1px solid #2a2e3a;">
+<div style="padding:28px 32px; border-bottom:1px solid #2a2e3a;">
+<div style="font-size:12px; letter-spacing:1.5px; color:#7aa2ff;">📰 NEWSLETTER</div>
+<div style="font-size:23px; font-weight:700; margin-top:8px; color:#f0f2f8;">{{subject}}</div>
+</div>
+<div style="padding:28px 32px; color:#cdd2dd;">{{body}}</div>
+<div style="padding:18px 32px; background:#161922; color:#7c8294; font-size:12px; border-top:1px solid #2a2e3a;">
+ⓒ <strong style="color:#aab1c2;">NewsCrew 팀</strong> · <a href="{{unsubscribe_url}}" style="color:#7aa2ff;">구독취소</a>
+</div></div></div>"""
+
+DEFAULT_TEMPLATES = [
+    {"code": "default", "name": "기본 (파란 카드)", "html": _TPL_DEFAULT},
+    {"code": "minimal", "name": "미니멀 (심플)",   "html": _TPL_MINIMAL},
+    {"code": "dark",    "name": "다크",            "html": _TPL_DARK},
+]
+
+
+def _seed_templates() -> None:
+    """기본 이메일 템플릿 중 '코드가 아직 없는 것'만 넣습니다."""
+    existing = {r["code"] for r in fetch_all("SELECT code FROM email_template")}
+    added = []
+    for t in DEFAULT_TEMPLATES:
+        if t["code"] in existing:
+            continue
+        execute("INSERT INTO email_template (code, name, html) VALUES (%s, %s, %s)",
+                (t["code"], t["name"], t["html"]))
+        added.append(t["name"])
+    print(f"[DB]   이메일 템플릿: 추가 {len(added)}개 / 기존 {len(existing)}개"
+          + (f" (추가: {', '.join(added)})" if added else ""))
+
+
+def list_templates() -> list[dict]:
+    """이메일 템플릿 목록을 조회합니다. (html 포함)"""
+    return fetch_all("SELECT id, code, name, html, is_active FROM email_template ORDER BY id")
+
+
+def create_template(code: str, name: str, html: str) -> int:
+    """이메일 템플릿을 추가합니다. (code 중복 시 예외)"""
+    return execute("INSERT INTO email_template (code, name, html) VALUES (%s, %s, %s)",
+                   (code, name, html))
+
+
+def delete_template(template_id: int) -> int:
+    """이메일 템플릿 한 건을 삭제합니다."""
+    return execute("DELETE FROM email_template WHERE id = %s", (template_id,))
+
+
+def get_template_html(code: str | None) -> str | None:
+    """템플릿 코드로 HTML을 가져옵니다. (없으면 None)"""
+    if not code:
+        return None
+    row = fetch_one("SELECT html FROM email_template WHERE code = %s", (code,))
+    return row["html"] if row else None

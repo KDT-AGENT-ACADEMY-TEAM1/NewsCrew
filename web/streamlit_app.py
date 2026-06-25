@@ -11,11 +11,14 @@ FastAPI 백엔드(app/main.py)가 하고, 여기서는 api_client 로 그 API를
 """
 from __future__ import annotations
 
+import concurrent.futures
 import re
+import time
 
 import streamlit as st
 
 import api_client as api   # FastAPI 백엔드 호출 (DB/LangGraph는 백엔드가 처리)
+import ui_theme as ui
 
 
 # ==========================================================================
@@ -23,45 +26,10 @@ import api_client as api   # FastAPI 백엔드 호출 (DB/LangGraph는 백엔드
 # ==========================================================================
 def setup_page():
     st.set_page_config(
-        page_title="뉴스레터 에이전트 (학습용)",
+        page_title="NewsCrew — 뉴스레터 에이전트",
         page_icon="📰",
         layout="wide",
-    )
-
-
-def inject_css():
-    st.markdown(
-        """
-        <style>
-        .msg      { padding:10px 14px; border-radius:12px; margin:6px 0;
-                    max-width:80%; line-height:1.5; }
-        .msg.user { background:#5681d0; color:#fff; margin-left:auto; }
-        .msg.bot  { background:#2a2a40; color:#eee; }
-
-        /* ---- 생성 결과 테이블 (라이트/다크 테마 모두 대응) ---- */
-        .rhead { font-weight:600; opacity:.65; padding:4px 8px; font-size:.85rem; }
-        .rcell { padding:2px 8px; font-size:.92rem; line-height:1.3;
-                 color:var(--text-color);
-                 white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .rcell.title { font-weight:600; }
-        .rcell.muted { opacity:.6; font-variant-numeric:tabular-nums; }
-        .rdiv      { border:none; border-top:1px solid rgba(128,128,128,.28); margin:0; }
-        .rdiv.head { border-top:2px solid rgba(128,128,128,.5); }
-        .badge { display:inline-block; padding:3px 11px; border-radius:999px;
-                 font-size:.78rem; font-weight:600; line-height:1.5; color:#fff; }
-        .badge.s-reviewing { background:#3b6fd4; }
-        .badge.s-writing   { background:#e08a3c; }
-        .badge.s-awaiting  { background:#caa11e; }
-        .badge.s-sent      { background:#2e9d63; }
-        .badge.s-default   { background:#6b7280; }
-
-        .st-key-resulttbl [data-testid="stVerticalBlock"] { gap:.1rem; }
-        .st-key-resulttbl [data-testid="stHorizontalBlock"] { margin:0; }
-        .st-key-resulttbl .stButton > button {
-            padding:.05rem .5rem; min-height:0; line-height:1.4; }
-        </style>
-        """,
-        unsafe_allow_html=True,
+        initial_sidebar_state="expanded",
     )
 
 
@@ -119,14 +87,13 @@ def md_to_html(text: str) -> str:
             html.append(f"<h2 style='font-size:1.6rem; margin:4px 0 12px;'>{_inline_md(line[2:])}</h2>")
         elif line.startswith("> "):
             html.append(
-                "<blockquote style='color:#9aa3b2; border-left:3px solid #444; "
-                f"margin:8px 0; padding:2px 12px;'>{_inline_md(line[2:])}</blockquote>"
+                f"<blockquote>{_inline_md(line[2:])}</blockquote>"
             )
         else:
             html.append(f"<p style='margin:8px 0; line-height:1.75;'>{_inline_md(line)}</p>")
 
     close_list()
-    return f"<div style='font-size:1rem; line-height:1.75;'>{chr(10).join(html)}</div>"
+    return f"<div class='nc-draft'>{chr(10).join(html)}</div>"
 
 
 def draft_title(draft: str) -> str:
@@ -140,6 +107,49 @@ STATUS_LABELS = {
     "researching": "리서치중", "writing": "작성중", "reviewing": "검수중",
     "awaiting_approval": "승인대기", "sent": "메일 발송완료",
 }
+
+# 생성 스피너 — 단계 전환 간격(초). API 응답 전까지 리서치→작성→검수 순으로 표시
+_GEN_STEP_INTERVAL = 12
+
+
+def _generate_with_progress(
+    keywords: list[str],
+    category_id: int | None,
+    type_code: str | None,
+    type_name: str | None,
+    kw_label: str,
+    progress_slot,
+) -> dict:
+    """단계 스피너를 보여 주며 생성 API를 호출합니다."""
+    step_count = len(ui.GENERATION_STEPS)
+    _, _, first_desc = ui.GENERATION_STEPS[0]
+    progress_slot.markdown(
+        ui.render_generation_progress(0, first_desc, kw_label),
+        unsafe_allow_html=True,
+    )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(api.generate, keywords, category_id, type_code)
+        step_idx = 0
+        started = time.time()
+
+        while not future.done():
+            elapsed = time.time() - started
+            step_idx = min(step_count - 1, int(elapsed / _GEN_STEP_INTERVAL))
+            _, _, desc = ui.GENERATION_STEPS[step_idx]
+            progress_slot.markdown(
+                ui.render_generation_progress(step_idx, desc, kw_label),
+                unsafe_allow_html=True,
+            )
+            time.sleep(0.35)
+
+        snap = future.result()
+
+    progress_slot.markdown(
+        ui.render_generation_progress(step_count, "모든 단계가 완료되었습니다.", kw_label, done=True),
+        unsafe_allow_html=True,
+    )
+    return snap
 
 
 def status_label(status: str | None) -> str:
@@ -181,94 +191,153 @@ def open_report(report_id: str):
 
 
 def page_input():
-    st.markdown("## 📝 뉴스레터용 보고서 작성")
+    ui.render_page_head(
+        "📝 뉴스레터용 보고서 작성",
+        "관심분야·보고서 유형·메시지를 모두 입력한 뒤 '생성'을 눌러 주세요.",
+    )
 
-    # (1) 지금까지의 대화를 말풍선으로 그리기
-    for i, m in enumerate(st.session_state.messages):
-        css = "user" if m["role"] == "user" else "bot"
+    detail_id = st.query_params.get("detail")
+    if detail_id:
+        st.query_params.clear()
+        open_report(detail_id)
+        return
+
+    messages = st.session_state.messages
+    for i, m in enumerate(messages):
+        content = m["content"]
         report_id = m.get("report_id")
-        st.markdown(f'<div class="msg {css}">{m["content"]}</div>', unsafe_allow_html=True)
-        if report_id:
-            if st.button("더보기", key=f"detail_{i}", help="생성 결과 화면에서 전체 보고서 보기"):
-                open_report(report_id)
-
-    # (1-2) 작성중이면: '작성중' 카드를 먼저 그린 뒤 그 자리에서 생성(API) 실행.
-    pending = st.session_state.pending
-    if pending:
-        kw = ", ".join(pending["keywords"])
-        types = pending.get("types") or [None]
-        batch = f"{len(types)}개 타입" if pending.get("types") else "뉴스레터"
+        if report_id and "<span class='link-hint'>" in content:
+            content = content.replace(
+                "<span class='link-hint'>더보기 →</span>",
+                f"<a class='link-hint' href='?detail={report_id}'>더보기 →</a>",
+            )
         st.markdown(
-            f'<div class="msg bot">⏳ <b>작성중...</b> '
-            f"'{kw}' 주제로 {batch}를 리서치 → 작성 → 검수 중이에요 🛠️</div>",
+            ui.chat_bubble(m["role"], content, last=(i == len(messages) - 1)),
             unsafe_allow_html=True,
         )
+
+    # (1-2) 생성 예약(pending) — 진행 카드 1개만 표시 후 키워드 추출·API 실행
+    pending = st.session_state.pending
+    if pending:
+        kw_preview = (
+            ", ".join(pending.get("label_keywords") or [])
+            or pending.get("display", "")[:60]
+        )
+        progress_slot = st.empty()
+        progress_slot.markdown(
+            ui.render_generation_progress(0, ui.GENERATION_STEPS[0][2], kw_preview),
+            unsafe_allow_html=True,
+        )
+
+        keywords = list(pending.get("label_keywords") or [])
         try:
-            for t in types:                               # 선택된 타입별로 한 건씩 생성
-                tcode = t["code"] if t else None           # state 에는 type_code(문자열)만 전달
-                tname = t["name"] if t else None           # 화면 표시용
-                snap = api.generate(pending["keywords"], pending.get("category_id"), tcode)
-                intro = (f"'{kw}'" + (f" · {tname}" if tname else "")
-                         + " 뉴스레터를 만들었어요! 📰")
-                push_report_message(snap, intro)
+            extracted = api.extract_keywords(pending["display"])
+        except Exception as e:
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": f"키워드 추출 실패 (API 서버 확인): {e}",
+            })
+            st.session_state.pending = None
+            st.rerun()
+
+        for kw in extracted:
+            if kw not in keywords:
+                keywords.append(kw)
+
+        if not keywords:
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": "주제를 조금 더 구체적으로 적어 주세요.",
+            })
+            st.session_state.pending = None
+            st.rerun()
+
+        kw = ", ".join(keywords)
+        types = pending.get("types") or [None]
+        try:
+            for t in types:
+                tcode = t["code"] if t else None
+                tname = t["name"] if t else None
+                snap = _generate_with_progress(
+                    keywords,
+                    pending.get("category_id"),
+                    tcode,
+                    tname,
+                    kw,
+                    progress_slot,
+                )
+                push_report_message(snap, type_name=tname)
         except Exception as e:
             st.error(f"생성 실패 — API 서버(8000)가 실행 중인지 확인하세요: {e}")
         st.session_state.pending = None
         st.rerun()
 
-    # (2) 관심 카테고리로 빠르게 만들기
-    with st.expander("📂 관심 카테고리로 만들기", expanded=False):
-        try:
-            catalog = api.get_flat_categories()
-        except Exception as e:
-            st.error(f"API 호출 실패 — 서버(8000) 실행을 확인하세요: {e}")
-            catalog = []
-        if not catalog:
-            st.info("등록된 카테고리가 없습니다. '카테고리 등록'에서 추가하세요.")
-        else:
-            labels = st.multiselect(
-                "카테고리 선택 (여러 개 가능)",
-                options=[row["label"] for row in catalog],
-                key="cat_select",
-                placeholder="예: AI/기술 > 생성형 AI",
-            )
-            if labels:
-                kws = api.keywords_for_labels(labels, catalog)
-                chips = " ".join(f"<span class='badge s-reviewing'>{kw}</span>" for kw in kws)
-                st.markdown(
-                    f"<div style='margin:.2rem 0 .6rem;'>"
-                    f"<span style='opacity:.7;'>키워드:</span> {chips}</div>",
-                    unsafe_allow_html=True,
-                )
+    st.markdown('<div class="nc-form-section">', unsafe_allow_html=True)
 
-            # 생성 타입 체크박스 (기본 전체 체크) — 체크된 타입만 생성합니다.
-            try:
-                types_all = api.list_newsletter_types(active_only=True)
-            except Exception:
-                types_all = []
-            selected_types = []
-            if types_all:
-                st.markdown("<span style='opacity:.7;'>생성 타입</span>", unsafe_allow_html=True)
-                cols = st.columns(len(types_all))
-                for col, t in zip(cols, types_all):
-                    if col.checkbox(t["name"], value=True, key=f"type_chk_{t['id']}"):
-                        selected_types.append(t)
+    # (2) 카테고리·타입 선택 + 메시지 입력 (통합 생성)
+    try:
+        catalog = api.get_flat_categories()
+    except Exception as e:
+        st.error(f"API 호출 실패 — 서버(8000) 실행을 확인하세요: {e}")
+        catalog = []
 
-            if st.button("선택한 카테고리로 생성", disabled=not labels, use_container_width=True):
-                handle_category_submit(labels, catalog, selected_types)
-                st.rerun()
+    labels = st.multiselect(
+        "관심분야 * (필수, 여러 개 가능)",
+        options=[row["label"] for row in catalog],
+        key="cat_select",
+        placeholder="예: AI/기술 > 생성형 AI",
+        disabled=not catalog,
+    )
+    if labels:
+        kws = api.keywords_for_labels(labels, catalog)
+        chips = " ".join(f"<span class='badge s-reviewing'>{kw}</span>" for kw in kws)
+        st.markdown(
+            f"<div class='nc-chip-row'>"
+            f"<span class='label'>키워드</span> {chips}</div>",
+            unsafe_allow_html=True,
+        )
+    elif not catalog:
+        st.info("등록된 카테고리가 없습니다. '카테고리 등록'에서 추가하세요.")
 
-    # (3) 직접 입력 폼
+    try:
+        types_all = api.list_newsletter_types(active_only=True)
+    except Exception:
+        types_all = []
+    selected_types: list[dict] = []
+    if types_all:
+        st.markdown(
+            "<span style='color:var(--nc-muted);font-size:.85rem;font-weight:600;'>보고서 유형 * (필수, 1개 이상)</span>",
+            unsafe_allow_html=True,
+        )
+        cols = st.columns(len(types_all))
+        for col, t in zip(cols, types_all):
+            if col.checkbox(t["name"], value=False, key=f"type_chk_{t['id']}"):
+                selected_types.append(t)
+
     with st.form("chat_form", clear_on_submit=True):
-        prompt = st.text_input("메시지", placeholder="예: 전기차랑 배터리 소식 정리해줘")
-        submitted = st.form_submit_button("전송")
+        st.markdown(
+            "메시지 * (필수) "
+            "<span style='color:#fff;font-size:0.85rem;'>"
+            "예)최신 주가 정보 및 법령 등을 포함한 뉴스레터를 작성해줘"
+            "</span>",
+            unsafe_allow_html=True,
+        )
+        prompt = st.text_input(
+            "메시지",
+            placeholder="예: 전기차·배터리 최신 동향을 포함해서 정리해줘",
+            label_visibility="collapsed",
+        )
+        submitted = st.form_submit_button("생성", use_container_width=True)
 
-    if submitted and prompt.strip():
-        handle_submit(prompt.strip())
+    if submitted:
+        handle_combined_submit(
+            prompt, labels, catalog, selected_types,
+            types_required=bool(types_all),
+        )
         st.rerun()
 
 
-def push_report_message(snap: dict, intro: str):
+def push_report_message(snap: dict, type_name: str | None = None, *, done_label: str = "생성 완료!"):
     """생성/재작성 결과를 채팅창에 '짧은 보고서 카드'로 추가합니다."""
     report_id = snap["thread_id"]
     st.session_state.thread_id = report_id
@@ -277,54 +346,89 @@ def push_report_message(snap: dict, intro: str):
     st.session_state.view_report = None
 
     draft = snap["draft"]
+    title = snap.get("title") or draft_title(draft)
+    type_label = type_name or snap.get("type_label") or "-"
     score = snap.get("review", {}).get("score", "-")
     st.session_state.messages.append({
         "role": "assistant",
         "report_id": report_id,
         "content": (
-            f"{intro}<br>"
-            f"<b>{draft_title(draft)}</b> · 검수 {score}점 "
-            f"· 상태: {status_label(snap.get('status'))}<br>"
-            f"<span style='color:#bcd;'>{draft_excerpt(draft)}</span> "
-            f"<span style='color:#8ab4ff;'>더보기</span>"
+            f"✅ <b>{done_label}</b>"
+            f"<div class='msg-meta'>"
+            f"<b>제목</b> {title}<br>"
+            f"<b>타입</b> {type_label}<br>"
+            f"검수 {score}점 · 상태: {status_label(snap.get('status'))}"
+            f"</div>"
+            f"<span class='excerpt'>{draft_excerpt(draft)}</span> "
+            f"<a class='link-hint' href='?detail={report_id}'>더보기 →</a>"
         ),
     })
 
 
-def handle_submit(prompt: str):
-    """전송 버튼을 눌렀을 때의 처리 흐름."""
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    try:
-        keywords = api.extract_keywords(prompt)
-    except Exception as e:
-        st.session_state.messages.append(
-            {"role": "assistant", "content": f"키워드 추출 실패 (API 서버 확인): {e}"})
-        return
-    if not keywords:
-        st.session_state.messages.append(
-            {"role": "assistant", "content": "주제를 조금 더 구체적으로 적어 주세요."})
-        return
-    # 실제 생성은 '다음 rerun'에서 (작성중 화면을 먼저 보여 주기 위해 예약만).
-    st.session_state.pending = {"keywords": keywords}
+def _build_user_request(prompt: str, labels: list[str], types: list[dict]) -> str:
+    """채팅에 표시·에이전트에 전달할 통합 요청 문장을 만듭니다."""
+    prompt = prompt.strip()
+    type_txt = " · ".join(t["name"] for t in types) if types else ""
+
+    if labels and prompt:
+        base = f"[{', '.join(labels)}] {prompt}"
+    elif labels:
+        base = f"[{', '.join(labels)}] 관련 최신 소식으로 뉴스레터 만들어줘"
+    else:
+        base = prompt
+
+    if type_txt and labels:
+        return f"{base} · 타입: {type_txt}"
+    if type_txt and not labels and prompt:
+        return f"{prompt} · 타입: {type_txt}"
+    return base
 
 
-def handle_category_submit(labels: list[str], catalog: list[dict],
-                           types: list[dict] | None = None):
-    """선택한 카테고리 + 체크한 생성 타입으로 생성을 예약합니다."""
-    keywords = api.keywords_for_labels(labels, catalog)
-    if not keywords:
+def handle_combined_submit(
+    prompt: str,
+    labels: list[str],
+    catalog: list[dict],
+    types: list[dict] | None = None,
+    *,
+    types_required: bool = False,
+):
+    """카테고리 선택 + 메시지를 합쳐 작성 에이전트 호출을 예약합니다."""
+    types = types or []
+    prompt = prompt.strip()
+
+    if not prompt:
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": "메시지를 입력해 주세요.",
+        })
         return
+
+    missing: list[str] = []
+    if not labels:
+        missing.append("관심분야")
+    if types_required and not types:
+        missing.append("보고서 유형")
+
+    if missing:
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": " · ".join(missing) + "을(를) 선택해 주세요.",
+        })
+        return
+
+    display = _build_user_request(prompt, labels, types)
+    st.session_state.messages.append({"role": "user", "content": display})
+
     by_label = {row["label"]: row["id"] for row in catalog}
     category_id = by_label.get(labels[0]) if labels else None
-    types = types or []
+    label_keywords = api.keywords_for_labels(labels, catalog) if labels else []
 
-    if types:
-        type_txt = " · ".join(t["name"] for t in types)
-        comment = f"[{', '.join(labels)}] 관련 최신 소식으로 [{type_txt}] 뉴스레터 만들어줘"
-    else:
-        comment = f"[{', '.join(labels)}] 관련 최신 소식으로 뉴스레터 만들어줘"
-    st.session_state.messages.append({"role": "user", "content": comment})
-    st.session_state.pending = {"keywords": keywords, "category_id": category_id, "types": types}
+    st.session_state.pending = {
+        "display": display,
+        "label_keywords": label_keywords,
+        "category_id": category_id,
+        "types": types or None,
+    }
 
 
 def handle_reject_to_chat(thread_id: str, feedback: str):
@@ -338,7 +442,7 @@ def handle_reject_to_chat(thread_id: str, feedback: str):
         except Exception as e:
             st.error(f"재작성 실패: {e}")
             return
-    push_report_message(snap, "수정 요청을 반영해 다시 작성했어요! ✍️")
+    push_report_message(snap, type_name=snap.get("type_label"), done_label="재작성 완료!")
     st.session_state.goto = "📝 뉴스레터작성"
     st.rerun()
 
@@ -347,7 +451,7 @@ def handle_reject_to_chat(thread_id: str, feedback: str):
 # 5) 화면(페이지) — 생성 결과 + 승인/반려
 # ==========================================================================
 def page_result():
-    st.markdown("## 📨 생성 결과")
+    ui.render_page_head("📨 생성 결과", "생성된 뉴스레터를 확인하고 승인·반려·발송할 수 있습니다.")
     if st.session_state.view_report:
         _result_detail(st.session_state.view_report)
     else:
@@ -381,7 +485,7 @@ def _result_list():
     st.caption(f"총 {len(rows)}건 · '상세보기'로 본문 확인 및 승인/반려할 수 있어요.")
 
     with st.container(key="resulttbl"):
-        widths = [1.5, 1.4, 1.2, 2.3, 1.8, 0.6, 1.1, 0.6]
+        widths = [1.5, 1.4, 1.2, 1.9, 1.8, 0.6, 1.5, 0.6]
         headers = ["작성일", "관심영역", "타입", "메일내용", "상태", "점수", "관리", ""]
         status_codes = list(STATUS_LABELS.keys())
         head = st.columns(widths, vertical_alignment="center")
@@ -414,7 +518,8 @@ def _result_list():
                     st.error(f"상태 변경 실패: {e}")
                 st.rerun()
             c[5].markdown(f"<div class='rcell muted'>{score_txt}</div>", unsafe_allow_html=True)
-            if c[6].button("상세보기", key=f"view_{r['thread_id']}", use_container_width=True):
+            if c[6].button("🔍 상세보기", key=f"view_{r['thread_id']}",
+                           use_container_width=True, type="primary"):
                 st.session_state.view_report = r["thread_id"]
                 st.rerun()
             if c[7].button("🗑️", key=f"del_{r['thread_id']}", help="삭제", use_container_width=True):
@@ -458,22 +563,72 @@ def _result_detail(thread_id: str):
     type_html = (f" · 타입: <b>{type_label}</b>" if type_label else "")
     st.markdown(
         f"상태: {status_badge(snap.get('status'))} "
-        f"<span style='color:#8a93a6;'>· 재작성 {snap.get('revision_count', 0)}회{type_html}</span>",
+        f"<span style='color:var(--nc-muted);'>· 재작성 {snap.get('revision_count', 0)}회{type_html}</span>",
         unsafe_allow_html=True,
     )
     st.markdown(md_to_html(snap.get("draft", "")), unsafe_allow_html=True)
 
     review = snap.get("review") or {}
-    if review.get("feedback"):
-        st.caption(f"🧾 검수 코멘트: {review['feedback']} (점수 {review.get('score')})")
+    if review:
+        st.write("---")
+        st.subheader("🔍 AI 편집장 품질 검수 결과")
+        
+        score = review.get("score", 0)
+        passed = review.get("passed", False)
+        
+        col_score, col_status = st.columns(2)
+        with col_score:
+            st.metric(label="품질 점수", value=f"{score} / 100점")
+        with col_status:
+            status_text = "🟢 통과" if passed else "🔴 품질 미달 (재작성 필요)"
+            st.metric(label="검수 결과", value=status_text)
+            
+        feedback_val = review.get("feedback")
+        if feedback_val:
+            st.info(f"**✍️ 편집장 총평:**  \n{feedback_val}")
+            
+        reasons = review.get("deduction_reasons")
+        if isinstance(reasons, dict) and any(val and val != "없음" for val in reasons.values()):
+            with st.expander("📊 항목별 상세 감점 사유 확인", expanded=not passed):
+                for cat_key, cat_name in [
+                    ("structure", "🧱 구조 (도입부 Hooking & 문단 연결성)"),
+                    ("expression", "✨ 표현 (상투적 표현 & 동의어 반복)"),
+                    ("readability", "📱 가독성 (정보 완급 조절 & 예시/비유)"),
+                    ("tone", "🗣️ 톤앤매너 (어미 일관성 & 기계적 중립성)"),
+                    ("value", "💎 정보가치 (핵심 요약 & 할루시네이션)")
+                ]:
+                    reason_desc = reasons.get(cat_key, "없음")
+                    if reason_desc and reason_desc != "없음":
+                        st.markdown(f"**{cat_name}**")
+                        st.caption(reason_desc)
+                        st.divider()
+
+        suggested_fix = review.get("suggested_fix")
+        if suggested_fix and suggested_fix != "없음":
+            st.warning(f"**🛠️ AI 작성자를 위한 피드백 및 행동 지침:**  \n{suggested_fix}")
 
     # 발송 전(sent 아님)이면 세션과 무관하게 승인/반려 가능
     if snap["status"] != "sent":
+        # 발송에 쓸 이메일 템플릿 선택 (기본 = 환경설정의 기본 템플릿)
+        tpl_code = None
+        try:
+            templates = api.list_templates()
+        except Exception:
+            templates = []
+        if templates:
+            codes = [t["code"] for t in templates]
+            name_by = {t["code"]: t["name"] for t in templates}
+            default_code = _default_template_code()
+            idx = codes.index(default_code) if default_code in codes else 0
+            tpl_code = st.selectbox("이메일 템플릿", codes, index=idx,
+                                    format_func=lambda c: name_by.get(c, c),
+                                    key=f"tpl_{thread_id}")
+
         feedback = st.text_input("반려 시 수정 요청(선택)", placeholder="예: 더 짧고 캐주얼하게")
         c1, c2 = st.columns(2)
         if c1.button("✅ 승인 → 발송", use_container_width=True):
             try:
-                st.session_state.snap = api.approve(thread_id)
+                st.session_state.snap = api.approve(thread_id, tpl_code)
             except Exception as e:
                 st.error(f"승인 실패: {e}")
             st.rerun()
@@ -500,8 +655,7 @@ def _valid_email(email: str) -> bool:
 
 
 def userlists():
-    st.markdown("## 📨 메일링리스트")
-    st.caption("뉴스레터를 받을 구독자와 관심분야를 관리합니다.")
+    ui.render_page_head("📨 메일링리스트", "뉴스레터를 받을 구독자와 관심분야를 관리합니다.")
 
     try:
         subs = api.list_subscribers()
@@ -540,14 +694,14 @@ def userlists():
         st.info("아직 등록된 구독자가 없습니다. 위에서 추가하세요.")
         return
 
-    st.write(f"총 **{len(subs)}명** 구독 중")
+    st.markdown(f"<p style='color:var(--nc-muted);font-size:.9rem;'>총 <b>{len(subs)}</b>명 구독 중</p>",
+                unsafe_allow_html=True)
     for s in subs:
         c1, c2 = st.columns([6, 1])
         nm = f" ({s['name']})" if s.get("name") else ""
         cats = s.get("categories") or "관심분야 미선택"
         c1.markdown(
-            f"**{s['email']}**{nm}<br>"
-            f"<span style='color:#9ab;'>관심분야: {cats}</span>",
+            ui.list_card(f"{s['email']}{nm}", f"관심분야: {cats}"),
             unsafe_allow_html=True,
         )
         if c2.button("🗑️", key=f"delsub_{s['id']}", help="삭제"):
@@ -578,8 +732,7 @@ def _parse_lines_input(text: str) -> list[str]:
 
 
 def page_categories():
-    st.markdown("## 🗂️ 카테고리 등록")
-    st.caption("뉴스레터 관심분야를 추가/삭제합니다.")
+    ui.render_page_head("🗂️ 카테고리 등록", "뉴스레터 관심분야·키워드·체크포인트를 관리합니다.")
 
     try:
         cats = api.list_categories()
@@ -626,7 +779,8 @@ def page_categories():
         st.info("아직 등록된 카테고리가 없습니다. 위에서 추가하세요.")
         return
 
-    st.write(f"총 **{len(cats)}개** 등록됨")
+    st.markdown(f"<p style='color:var(--nc-muted);font-size:.9rem;'>총 <b>{len(cats)}</b>개 등록됨</p>",
+                unsafe_allow_html=True)
     for c in cats:
         c1, c2 = st.columns([6, 1])
         parent = f" · 상위: {c['parent_name']}" if c.get("parent_name") else ""
@@ -634,9 +788,10 @@ def page_categories():
         cps = c.get("checkpoints") or []
         active = "" if c["is_active"] else " · ⛔비활성"
         c1.markdown(
-            f"**{c['name']}** `{c['code']}`{parent}{active}<br>"
-            f"<span style='color:#9ab;'>키워드: {kw}</span><br>"
-            f"<span style='color:#9ab;'>체크포인트: {('· ' + ' · '.join(cps)) if cps else '-'}</span>",
+            ui.list_card(
+                f"{c['name']} <code>{c['code']}</code>{parent}{active}",
+                f"키워드: {kw}<br>체크포인트: {('· '.join(cps)) if cps else '-'}",
+            ),
             unsafe_allow_html=True,
         )
         if c2.button("🗑️", key=f"delcat_{c['id']}", help="삭제"):
@@ -659,8 +814,7 @@ def page_categories():
 # 8) 화면(페이지) — 환경설정
 # ==========================================================================
 def page_settings():
-    st.markdown("## ⚙️ 환경설정")
-    st.caption("뉴스레터 자동 작성 관련 환경을 관리합니다.")
+    ui.render_page_head("⚙️ 환경설정", "뉴스레터 자동 작성 관련 환경을 관리합니다.")
 
     try:
         settings = api.get_settings()
@@ -685,6 +839,15 @@ def page_settings():
             elif vtype == "bool":
                 new_values[key] = "1" if st.checkbox(
                     label, value=(str(cur) == "1"), help=help_, key=f"set_{key}") else "0"
+            elif vtype == "template":
+                # 기본 이메일 템플릿 — 등록된 템플릿 목록에서 선택
+                tpls = _safe_list_templates()
+                codes = [t["code"] for t in tpls] or ["default"]
+                name_by = {t["code"]: t["name"] for t in tpls}
+                idx = codes.index(cur) if cur in codes else 0
+                new_values[key] = st.selectbox(
+                    label, codes, index=idx, format_func=lambda c: name_by.get(c, c),
+                    help=help_, key=f"set_{key}")
             else:
                 new_values[key] = st.text_input(label, value=cur or "", help=help_, key=f"set_{key}")
         saved = st.form_submit_button("💾 저장")
@@ -737,13 +900,135 @@ def _settings_newsletter_types():
     for t in types:
         c1, c2 = st.columns([6, 1])
         c1.markdown(
-            f"**{t['name']}** `{t['code']}`<br>"
-            f"<span style='color:#9ab;'>{t['description'] or '-'}</span>",
+            ui.list_card(f"{t['name']} <code>{t['code']}</code>", t["description"] or "-"),
             unsafe_allow_html=True,
         )
         if c2.button("🗑️", key=f"deltype_{t['id']}", help="삭제"):
             api.delete_newsletter_type(t["id"])
             st.rerun()
+
+
+# ==========================================================================
+# 8-2) 화면(페이지) — 이메일 템플릿 등록
+# ==========================================================================
+def _safe_list_templates() -> list[dict]:
+    try:
+        return api.list_templates()
+    except Exception:
+        return []
+
+
+def _default_template_code() -> str:
+    """환경설정의 기본 이메일 템플릿 코드를 읽어 옵니다. (실패 시 'default')"""
+    try:
+        for s in api.get_settings():
+            if s["setting_key"] == "default_template_code":
+                return s["setting_value"] or "default"
+    except Exception:
+        pass
+    return "default"
+
+
+def page_templates():
+    ui.render_page_head(
+        "📧 이메일 템플릿 등록",
+        "발송 시 사용할 HTML 템플릿을 등록합니다. "
+        "{{subject}} · {{body}} · {{unsubscribe_url}} 가 자동 치환됩니다.",
+    )
+
+    templates = _safe_list_templates()
+
+    # (1) 새 템플릿 추가
+    with st.form("add_tpl_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        name = col1.text_input("템플릿명 *", placeholder="예: 깔끔한 카드형")
+        code = col2.text_input("코드 * (영문 슬러그)", placeholder="예: card")
+        html = st.text_area(
+            "HTML * ({{body}} 자리에 본문이 들어갑니다)", height=240,
+            placeholder="<div>...{{subject}}... {{body}} ...<a href='{{unsubscribe_url}}'>구독취소</a></div>")
+        submitted = st.form_submit_button("➕ 템플릿 추가")
+
+    if submitted:
+        if not name.strip() or not code.strip() or not html.strip():
+            st.warning("템플릿명·코드·HTML 은 필수입니다.")
+        elif "{{body}}" not in html:
+            st.warning("HTML 안에 본문이 들어갈 자리 {{body}} 가 반드시 있어야 합니다.")
+        else:
+            try:
+                api.create_template(code.strip(), name.strip(), html)
+                st.success(f"'{name.strip()}' 템플릿을 추가했습니다!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"추가 실패 (코드 중복 등 확인): {e}")
+
+    st.divider()
+
+    # (2) 등록된 템플릿 목록 + 미리보기 + 삭제
+    if not templates:
+        st.info("등록된 템플릿이 없습니다. 위에서 추가하세요.")
+        return
+    for t in templates:
+        c1, c2 = st.columns([6, 1])
+        c1.markdown(ui.list_card(f"{t['name']} <code>{t['code']}</code>", "HTML 이메일 템플릿"),
+                    unsafe_allow_html=True)
+        if c2.button("🗑️", key=f"deltpl_{t['id']}", help="삭제"):
+            api.delete_template(t["id"])
+            st.rerun()
+        with c1.expander("👁️ 미리보기"):
+            preview = (t["html"] or "").replace("{{subject}}", "미리보기 제목 — 모빌리티 뉴스레터") \
+                .replace("{{body}}", "<h2>소제목</h2><p>본문 예시입니다. <strong>굵게</strong>도 됩니다.</p>"
+                                     "<ul><li>항목 1</li><li>항목 2</li></ul>") \
+                .replace("{{unsubscribe_url}}", "#")
+            st.components.v1.html(preview, height=360, scrolling=True)
+
+
+# ==========================================================================
+# 8-3) 화면(페이지) — 내부 자료 (Chroma)
+# ==========================================================================
+def page_knowledge():
+    ui.render_page_head(
+        "📚 내부 자료 (지식DB)",
+        "data/ 폴더의 txt·pdf를 Chroma 벡터DB에 색인합니다. "
+        "생성 시 search_internal_docs 도구가 이 자료를 검색해 참고합니다.",
+    )
+
+    try:
+        status = api.knowledge_status()
+    except Exception as e:
+        st.error(f"API 호출 실패 — 서버 실행을 확인하세요: {e}")
+        return
+
+    c1, c2 = st.columns([3, 1])
+    c1.metric("색인된 조각 수", status.get("count", 0))
+    if c2.button("🔄 재색인", help="data 폴더를 다시 읽어 임베딩"):
+        with st.spinner("내부 자료를 다시 임베딩하는 중..."):
+            try:
+                res = api.knowledge_reindex()
+                st.success(f"재색인 완료 — {res.get('count', 0)} 조각")
+                st.rerun()
+            except Exception as e:
+                st.error(f"재색인 실패: {e}")
+    st.caption("자료 폴더: " + " · ".join(status.get("dirs", [])))
+
+    st.divider()
+    st.markdown("### 🔍 내부 자료 검색 테스트")
+    q = st.text_input("검색어", placeholder="예: 뉴스레터 발송 정책")
+    if q.strip():
+        try:
+            hits = api.knowledge_search(q.strip(), 3)
+        except Exception as e:
+            st.error(f"검색 실패: {e}")
+            hits = []
+        if not hits:
+            st.info("관련 내용을 찾지 못했습니다. (먼저 재색인했는지 확인)")
+        for h in hits:
+            st.markdown(
+                ui.list_card(
+                    f"📄 {h.get('source', '내부자료')}",
+                    (h.get("text", "")[:400] + "…") if len(h.get("text", "")) > 400 else h.get("text", ""),
+                ),
+                unsafe_allow_html=True,
+            )
 
 
 # ==========================================================================
@@ -753,31 +1038,41 @@ PAGES = {
     "📝 뉴스레터작성": page_input,
     "📨 뉴스레터 생성 결과": page_result,
     "🗂️ 카테고리 등록": page_categories,
+    "📚 내부 자료": page_knowledge,
     "📨 메일링리스트": userlists,
+    "📧 템플릿 등록": page_templates,
     "⚙️ 환경설정": page_settings,
 }
 
-
-def render_header():
-    st.markdown(
-        "<h1 style='text-align:center; margin:0 0 4px;'>뉴스레터 자동 생성 Agent</h1>"
-        "<p style='text-align:center; color:#888; margin:0 0 16px;'>"
-        "키워드만 입력하면 리서치 → 작성 → 검수 → 발송까지 자동으로!</p>"
-        "<hr style='margin:0 0 20px;'>",
-        unsafe_allow_html=True,
-    )
+# 사이드바 메뉴 그룹 — 그룹명: [하위 메뉴 키…] (값은 PAGES 의 키와 일치)
+MENU_GROUPS = {
+    "뉴스레터 작성": ["📝 뉴스레터작성", "📨 뉴스레터 생성 결과"],
+    "환경 관리": ["🗂️ 카테고리 등록", "📨 메일링리스트", "📚 내부 자료",
+               "📧 템플릿 등록", "⚙️ 환경설정"],
+}
 
 
 def render_sidebar() -> str:
+    """그룹(뉴스레터 작성 / 환경 관리)별로 하위 메뉴를 버튼으로 그립니다.
+
+    선택된 메뉴는 st.session_state.menu 에 보관(현재 페이지 = 파란 버튼).
+    handle_reject_to_chat() 등이 남긴 '이동 예약(goto)'도 여기서 반영합니다.
+    """
     pending = st.session_state.pop("goto", None)
     if pending in PAGES:
         st.session_state.menu = pending
 
+    current = st.session_state.menu
     with st.sidebar:
-        st.markdown("### 📰 뉴스레터 에이전트")
-        choice = st.radio("메뉴", list(PAGES.keys()), key="menu")
-        st.caption("재작성 횟수·승인 기준 점수는 '⚙️ 환경설정'에서 관리합니다.")
-    return choice
+        ui.render_sidebar_brand()
+        for group, items in MENU_GROUPS.items():
+            ui.render_nav_group(group)
+            for label in items:
+                if st.button(label, key=f"nav_{label}", use_container_width=True,
+                             type="primary" if label == current else "secondary"):
+                    st.session_state.menu = label
+                    st.rerun()
+    return st.session_state.menu
 
 
 # ==========================================================================
@@ -785,10 +1080,10 @@ def render_sidebar() -> str:
 # ==========================================================================
 def main():
     setup_page()
-    inject_css()
+    ui.inject_global_css()
     init_state()
     choice = render_sidebar()
-    render_header()
+    ui.render_hero()
     PAGES[choice]()
 
 

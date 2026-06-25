@@ -22,9 +22,13 @@ from langchain_core.messages import SystemMessage
 
 # 환경변수 로드
 load_dotenv()
+
 # YAML 파일 로드 (서버 시작 시 한 번만 로드하도록 전역이나 설정 클래스에 두는 것을 추천합니다)
 with open("prompts.yaml", "r", encoding="utf-8") as f:
     prompts = yaml.safe_load(f)
+
+
+
 # ==========================================================================
 # STEP 2-a. 리서치 '에이전트' 노드 — LLM이 도구를 쓸지 스스로 판단
 # ==========================================================================

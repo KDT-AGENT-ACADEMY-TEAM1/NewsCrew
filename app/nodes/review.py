@@ -1,11 +1,8 @@
 """[노드] 검수 — 편집장 관점의 '체크리스트 기반' 자동 AI 검수.
 
-  구조 체크(규칙)  : 제목/소제목/분량/형식 → 결정적으로 점수화
-  품질 체크(LLM)   : 리드/톤앤매너/정보가치/명확성/마무리 → ask_ai 로 평가
-  → 항목별 점수를 합산(총 100점)하고, 환경설정의 '승인 기준 점수(pass_score)'로 통과 판정.
-
-검수 결과(점수/체크리스트 코멘트/상태)는 newsletter 테이블에 저장합니다.
-이 노드까지가 '그래프 한 덩어리'이고, 직후 send 직전에서 멈춰 사람 승인을 받습니다.
+구조 체크(규칙)  : 제목/소제목/분량/형식 → 결정적으로 점수화 (40점 만점)
+품질 체크(LLM)   : 리드/톤앤매너/정보가치/명확성/마무리 + 카테고리 체크포인트 + 타입 적합성 → ask_ai 로 평가 (60점 만점)
+→ 항목별 점수를 합산(총 100점)하고, 환경설정의 '승인 기준 점수(pass_score)'로 통과 판정.
 """
 from __future__ import annotations
 
@@ -14,10 +11,9 @@ import json
 from langgraph.config import get_config
 
 from ..categories import get_checkpoints
-from ..db import execute, get_int_setting
+from ..db import execute, fetch_one, get_int_setting
 from ..llm import ask_ai
 from ..state import NewsletterState, ReviewResult
-
 
 # 품질(LLM) 체크 항목: (키, 표시명, 평가 관점) — 배점은 항목 수에 맞춰 60점을 나눠 가집니다.
 QUALITATIVE_ITEMS = [
@@ -26,24 +22,37 @@ QUALITATIVE_ITEMS = [
     ("value",   "정보 가치",    "핵심 정보가 구체적이고 독자에게 유익한가(일반론만 아님)"),
     ("clarity", "명확성·간결성", "문장이 명확하고 군더더기 없이 이해하기 쉬운가"),
     ("closing", "마무리",       "맺음말 또는 다음 행동(관심·구독 등) 유도가 있는가"),
+    ("summary_clarity", "핵심 요약 명확성", "글 전체를 관통하는 핵심 메시지(Key Takeaway)나 구체적인 행동 지침(Action Item)이 명확히 제시되어 있는가"),
+    ("hallucination_filter", "할루시네이션 필터링", "구체적인 출처(기관, 전문가, 보고서 등) 없이 '최근 통계에 의하면' 등의 모호한 표현을 남발하지 않는가")
 ]
 QUALITATIVE_TOTAL = 60   # 품질 항목 합계 점수
 
 
-# ==========================================================================
-# STEP 4. 검수 노드 — 체크리스트 채점 + 점수 저장
-# ==========================================================================
 def review_node(state: NewsletterState) -> NewsletterState:
     draft = state.get("draft", "")
     revision = state.get("revision_count", 0)
+    type_code = state.get("type_code")
+
+    # 1. DB에서 타입명과 타입 설명 조회 (HEAD 기능 통합)
+    type_name = ""
+    type_desc = ""
+    if type_code:
+        row = fetch_one("SELECT name, description FROM newsletter_type WHERE code = %s", (type_code,))
+        if row:
+            type_name = row.get("name") or ""
+            type_desc = row.get("description") or ""
+
     print(f"[검수] 체크리스트 AI 검수 시작 ({revision}회차)")
 
-    # 이 보고서의 카테고리에 등록된 '주요 체크포인트'를 가져와 주제별 체크에 사용합니다.
+    # 2. 카테고리 체크포인트 가져오기 (main 기능)
     checkpoints = get_checkpoints(state.get("category_id"))
-    score, checklist = _checklist_review(draft, checkpoints)
+
+    # 3. 통합 체크리스트 검수 수행
+    score, checklist = _checklist_review(draft, checkpoints, type_name, type_desc)
     pass_score = get_int_setting("pass_score", 60)
     passed = score >= pass_score
 
+    # 4. 결과 포맷 가공 (main 포맷 준수)
     head = (f"{'✅ 통과' if passed else '❌ 미달'} · 총점 {score}/100 "
             f"(기준 {pass_score}점)\n")
     feedback = (head + checklist)[:990]   # review_feedback 컬럼(VARCHAR 1000) 보호
@@ -52,6 +61,7 @@ def review_node(state: NewsletterState) -> NewsletterState:
     revision_count = revision + 1
     status = "awaiting_approval" if passed else "writing"
     print(f"[검수] 결과: {'통과' if passed else '미달'} (점수 {score} / 기준 {pass_score})")
+    
     _save_review(review, status, revision_count)
     return {
         "review": review,
@@ -61,15 +71,14 @@ def review_node(state: NewsletterState) -> NewsletterState:
     }
 
 
-# ==========================================================================
-# 체크리스트 채점 (구조 + 품질)
-# ==========================================================================
-def _checklist_review(draft: str, checkpoints: list[str] | None = None) -> tuple[int, str]:
-    """체크리스트 항목별로 채점하고, (총점, 체크리스트 코멘트)를 돌려줍니다.
-
-    checkpoints: 카테고리에 등록된 '주요 체크포인트' — 있으면 주제별 체크 항목이 추가됩니다.
-    """
-    items = _structural_checks(draft) + _quality_checks(draft, checkpoints or [])
+def _checklist_review(
+    draft: str,
+    checkpoints: list[str] | None = None,
+    type_name: str = "",
+    type_desc: str = ""
+) -> tuple[int, str]:
+    """체크리스트 항목별로 채점하고, (총점, 체크리스트 코멘트)를 돌려줍니다."""
+    items = _structural_checks(draft) + _quality_checks(draft, checkpoints or [], type_name, type_desc)
     total = sum(it["score"] for it in items)
     lines = []
     for it in items:
@@ -115,16 +124,16 @@ def _structural_checks(draft: str) -> list[dict]:
     return items
 
 
-def _build_quality_spec(checkpoints: list[str]) -> list[tuple]:
-    """채점할 품질 항목 목록 (키, 표시명, 평가관점, 배점)을 만듭니다.
-
-    카테고리 체크포인트가 있으면 '주제 체크포인트' 항목을 추가하고,
-    배점은 항목 수에 맞춰 QUALITATIVE_TOTAL(60)을 고르게 나눠 줍니다.
-    """
+def _build_quality_spec(checkpoints: list[str], type_name: str = "", type_desc: str = "") -> list[tuple]:
+    """채점할 품질 항목 목록 (키, 표시명, 평가관점, 배점)을 만듭니다."""
     spec = list(QUALITATIVE_ITEMS)   # (키, 표시명, 평가관점)
     if checkpoints:
         desc = "이 분야의 핵심 체크포인트를 충실히 다뤘는가 — " + "; ".join(checkpoints)
         spec.append(("checkpoints", "주제 체크포인트", desc))
+    
+    if type_name:
+        desc = f"뉴스레터 타입 '{type_name}'의 스타일 가이드를 준수했는가 — {type_desc}"
+        spec.append(("style_guide", "타입 적합성", desc))
 
     n = len(spec)
     base = QUALITATIVE_TOTAL // n
@@ -136,9 +145,9 @@ def _build_quality_spec(checkpoints: list[str]) -> list[tuple]:
     return out
 
 
-def _quality_checks(draft: str, checkpoints: list[str]) -> list[dict]:
-    """LLM 기반 품질 체크 (리드/톤/가치/명확성/마무리 + 주제 체크포인트) — 총 60점."""
-    spec = _build_quality_spec(checkpoints)
+def _quality_checks(draft: str, checkpoints: list[str], type_name: str = "", type_desc: str = "") -> list[dict]:
+    """LLM 기반 품질 체크 (리드/톤/가치/명확성/마무리 + 주제 체크포인트 + 타입 적합성) — 총 60점."""
+    spec = _build_quality_spec(checkpoints, type_name, type_desc)
 
     # 분량이 너무 적으면 LLM 호출 없이 0점 처리
     if not draft or len(draft.strip()) < 80:
@@ -149,9 +158,11 @@ def _quality_checks(draft: str, checkpoints: list[str]) -> list[dict]:
     keys = ", ".join(f'"{key}"' for key, *_ in spec)
     skeleton = ", ".join(f'"{key}": {{"score": 0, "comment": ""}}' for key, *_ in spec)
     system = (
-        "당신은 10년차 뉴스레터 편집장입니다. 아래 초안을 체크리스트 항목별로 0~100점으로 채점하세요.\n"
+        "당신은 10년차 뉴스레터 편집장입니다. 아래 초안을 체크리스트 항목별로 0~100점으로 엄격하게 채점하세요.\n"
+        "특히 100점 미만으로 감점된 모든 항목에 대해서는, '초안의 어느 문장/표현이 부족하여 감점되었는지' 구체적인 문제점과 수정 가이드를 comment에 한국어로 명확히 작성해야 합니다. (100점 만점인 경우에만 강점/칭찬 작성)\n"
+        "각 comment는 공백 포함 100자 내외의 완성된 문장으로 작성해야 합니다.\n\n"
         f"[채점 항목]\n{rubric}\n\n"
-        "반드시 아래 JSON 형식으로만 답하세요. 각 항목에 score(0~100 정수)와 짧은 comment(한국어 한 문장).\n"
+        "반드시 아래 JSON 형식으로만 답하세요. 각 항목에 score(0~100 정수)와 구체적인 comment.\n"
         "{ " + skeleton + " }\n"
         f"(키는 정확히 {keys} 만 사용)"
     )
@@ -177,7 +188,7 @@ def _quality_checks(draft: str, checkpoints: list[str]) -> list[dict]:
         except (TypeError, ValueError):
             ratio = 0.6
         comment = str(raw.get("comment") or "").strip() or "-"
-        items.append(_item(label, pts, round(pts * ratio), comment[:80]))
+        items.append(_item(label, pts, round(pts * ratio), comment[:120]))
     return items
 
 
