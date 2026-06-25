@@ -47,6 +47,7 @@ def init_state():
     ss.setdefault("view_report", None)
     ss.setdefault("pending", None)
     ss.setdefault("menu", "📝 뉴스레터작성")
+    ss.setdefault("env_menu_open", False)
 
 
 # ==========================================================================
@@ -119,6 +120,7 @@ def _generate_with_progress(
     type_name: str | None,
     kw_label: str,
     progress_slot,
+    category_ids: list[int] | None = None,
 ) -> dict:
     """단계 스피너를 보여 주며 생성 API를 호출합니다."""
     step_count = len(ui.GENERATION_STEPS)
@@ -129,7 +131,9 @@ def _generate_with_progress(
     )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(api.generate, keywords, category_id, type_code)
+        future = pool.submit(
+            api.generate, keywords, category_id, type_code, category_ids or None,
+        )
         step_idx = 0
         started = time.time()
 
@@ -265,6 +269,7 @@ def page_input():
                     tname,
                     kw,
                     progress_slot,
+                    category_ids=pending.get("category_ids"),
                 )
                 push_report_message(snap, type_name=tname)
         except Exception as e:
@@ -317,8 +322,8 @@ def page_input():
     with st.form("chat_form", clear_on_submit=True):
         st.markdown(
             "메시지 * (필수) "
-            "<span style='color:#fff;font-size:0.85rem;'>"
-            "예)최신 주가 정보 및 법령 등을 포함한 뉴스레터를 작성해줘"
+            "<span style='color:#eeee;font-size:0.85rem;'>"
+            "최신 주가 정보 및 법령 등을 포함한 뉴스레터를 작성해줘"
             "</span>",
             unsafe_allow_html=True,
         )
@@ -420,13 +425,15 @@ def handle_combined_submit(
     st.session_state.messages.append({"role": "user", "content": display})
 
     by_label = {row["label"]: row["id"] for row in catalog}
-    category_id = by_label.get(labels[0]) if labels else None
+    category_ids = [by_label[label] for label in labels if label in by_label]
+    category_id = category_ids[0] if category_ids else None
     label_keywords = api.keywords_for_labels(labels, catalog) if labels else []
 
     st.session_state.pending = {
         "display": display,
         "label_keywords": label_keywords,
         "category_id": category_id,
+        "category_ids": category_ids,
         "types": types or None,
     }
 
@@ -570,7 +577,10 @@ def _result_detail(thread_id: str):
 
     review = snap.get("review") or {}
     if review.get("feedback"):
-        st.caption(f"🧾 검수 코멘트: {review['feedback']} (점수 {review.get('score')})")
+        st.markdown(
+            ui.render_review_feedback(review["feedback"], review.get("score")),
+            unsafe_allow_html=True,
+        )
 
     # 발송 전(sent 아님)이면 세션과 무관하게 승인/반려 가능
     if snap["status"] != "sent":
@@ -686,11 +696,21 @@ def _parse_keywords_input(text: str) -> list[str]:
     return keywords
 
 
-def _parse_lines_input(text: str) -> list[str]:
-    """줄 단위 입력(체크포인트)을 리스트로. (빈 줄/중복 제거)"""
+def _parse_checkpoints_lines(text: str) -> list[str]:
+    """체크포인트 입력 — 한 줄에 하나 (엔터 구분)."""
     out: list[str] = []
     for line in (text or "").split("\n"):
         s = line.strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def _parse_checkpoints_input(text: str) -> list[str]:
+    """체크포인트 일괄 입력 — 줄 단위 또는 쉼표(,) 구분. (환경설정용)"""
+    out: list[str] = []
+    for part in (text or "").replace("\n", ",").split(","):
+        s = part.strip()
         if s and s not in out:
             out.append(s)
     return out
@@ -715,8 +735,8 @@ def page_categories():
         code = col2.text_input("분야 코드 * (영문 슬러그)", placeholder="예: ai_tech")
         keywords_text = st.text_input("키워드 (쉼표로 구분)", placeholder="예: LLM, AI 에이전트, 반도체")
         checkpoints_text = st.text_area(
-            "주요 체크포인트 (한 줄에 하나 — 검수 시 주제별 체크에 사용)",
-            placeholder="예:\n핵심 개념을 쉽게 설명했는가\n실제 사례를 제시했는가",
+            "주요 체크포인트 (한 줄에 하나 — 엔터로 구분)",
+            placeholder="예:\n어떤 모델·도구인지 명확히 했는가\n실전 적용 포인트를 제시했는가",
             height=90)
         col3, col4 = st.columns(2)
         parent_label = col3.selectbox("상위 분야", list(parent_options.keys()))
@@ -732,7 +752,7 @@ def page_categories():
                                     keywords=_parse_keywords_input(keywords_text),
                                     parent_id=parent_options[parent_label],
                                     sort_order=int(sort_order),
-                                    checkpoints=_parse_lines_input(checkpoints_text))
+                                    checkpoints=_parse_checkpoints_lines(checkpoints_text))
                 st.success(f"'{name.strip()}' 카테고리를 추가했습니다!")
                 st.rerun()
             except Exception as e:
@@ -755,20 +775,37 @@ def page_categories():
         c1.markdown(
             ui.list_card(
                 f"{c['name']} <code>{c['code']}</code>{parent}{active}",
-                f"키워드: {kw}<br>체크포인트: {('· '.join(cps)) if cps else '-'}",
+                f"키워드: {kw}<br>체크포인트: {(' · '.join(cps)) if cps else '-'}",
             ),
             unsafe_allow_html=True,
         )
         if c2.button("🗑️", key=f"delcat_{c['id']}", help="삭제"):
             api.delete_category(c["id"])
             st.rerun()
-        # 체크포인트 편집
+        with c1.expander("✏️ 키워드 편집"):
+            kw_edit = st.text_input(
+                "키워드 (쉼표로 구분)",
+                value=", ".join(c["keywords"]) if c["keywords"] else "",
+                key=f"kw_{c['id']}",
+                placeholder="예: LLM, AI 에이전트, 반도체",
+            )
+            if st.button("저장", key=f"kwsave_{c['id']}"):
+                try:
+                    api.update_keywords(c["id"], _parse_keywords_input(kw_edit))
+                    st.success("키워드를 저장했습니다.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
         with c1.expander("✏️ 체크포인트 편집"):
-            edited = st.text_area("한 줄에 하나", value="\n".join(cps),
-                                  key=f"cp_{c['id']}", height=110)
+            cp_edit = st.text_area(
+                "한 줄에 하나 (엔터로 구분)",
+                value="\n".join(cps),
+                key=f"cp_{c['id']}",
+                height=110,
+            )
             if st.button("저장", key=f"cpsave_{c['id']}"):
                 try:
-                    api.update_checkpoints(c["id"], _parse_lines_input(edited))
+                    api.update_checkpoints(c["id"], _parse_checkpoints_lines(cp_edit))
                     st.success("체크포인트를 저장했습니다.")
                     st.rerun()
                 except Exception as e:
@@ -826,7 +863,85 @@ def page_settings():
             st.error(f"저장 실패: {e}")
 
     st.divider()
+    _settings_review_checklist()
+    st.divider()
     _settings_newsletter_types()
+
+
+def _settings_review_checklist():
+    """환경설정 화면의 '기본 검수 체크리스트' 관리 섹션."""
+    st.markdown("### ✅ 기본 검수 체크리스트")
+    st.caption(
+        "카테고리에 체크포인트가 없을 때 검수에 사용합니다. "
+        "한 줄에 하나, 또는 쉼표(,)로 여러 항목을 등록할 수 있습니다."
+    )
+
+    try:
+        items = api.list_review_checklist()
+    except Exception as e:
+        st.error(f"체크리스트를 불러오지 못했습니다: {e}")
+        return
+
+    with st.form("add_review_checklist_form", clear_on_submit=True):
+        labels_text = st.text_area(
+            "체크포인트 추가",
+            placeholder="예: 핵심 개념을 쉽게 설명했는가, 실제 사례를 제시했는가",
+            height=90,
+        )
+        added = st.form_submit_button("➕ 체크포인트 추가")
+
+    if added:
+        labels = _parse_checkpoints_input(labels_text)
+        if not labels:
+            st.warning("추가할 체크포인트를 입력하세요.")
+        else:
+            try:
+                api.create_review_checklist_bulk(labels)
+                st.success(f"체크포인트 {len(labels)}개를 추가했습니다!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"추가 실패: {e}")
+
+    if not items:
+        st.info("등록된 기본 검수 체크리스트가 없습니다. 위에서 추가하세요.")
+        return
+
+    st.markdown(
+        f"<p style='color:var(--nc-muted);font-size:.9rem;'>총 <b>{len(items)}</b>개 등록됨</p>",
+        unsafe_allow_html=True,
+    )
+    for it in items:
+        c1, c2 = st.columns([6, 1])
+        active = "" if it.get("is_active", 1) else " · ⛔비활성"
+        c1.markdown(
+            ui.list_card(f"#{it['sort_order']} {it['label']}{active}", "-"),
+            unsafe_allow_html=True,
+        )
+        if c2.button("🗑️", key=f"delrc_{it['id']}", help="삭제"):
+            try:
+                api.delete_review_checklist_item(it["id"])
+                st.rerun()
+            except Exception as e:
+                st.error(f"삭제 실패: {e}")
+        with c1.expander("✏️ 수정"):
+            new_label = st.text_input("체크포인트", value=it["label"], key=f"rclabel_{it['id']}")
+            new_order = st.number_input(
+                "정렬 순서", min_value=0, value=int(it.get("sort_order") or 0),
+                step=1, key=f"rcorder_{it['id']}",
+            )
+            new_active = st.checkbox(
+                "사용", value=bool(it.get("is_active", 1)), key=f"rcactive_{it['id']}",
+            )
+            if st.button("저장", key=f"rcsave_{it['id']}"):
+                try:
+                    api.update_review_checklist_item(
+                        it["id"], label=new_label.strip(), sort_order=int(new_order),
+                        is_active=new_active,
+                    )
+                    st.success("저장했습니다.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
 
 
 def _settings_newsletter_types():
@@ -1009,34 +1124,66 @@ PAGES = {
     "⚙️ 환경설정": page_settings,
 }
 
-# 사이드바 메뉴 그룹 — 그룹명: [하위 메뉴 키…] (값은 PAGES 의 키와 일치)
-MENU_GROUPS = {
-    "뉴스레터 작성": ["📝 뉴스레터작성", "📨 뉴스레터 생성 결과"],
-    "환경 관리": ["🗂️ 카테고리 등록", "📨 메일링리스트", "📚 내부 자료",
-               "📧 템플릿 등록", "⚙️ 환경설정"],
-}
+# 사이드바 메뉴 — 뉴스레터 작성(평면) / 환경관리(접이식)
+NEWSLETTER_MENU_ITEMS = ["📝 뉴스레터작성", "📨 뉴스레터 생성 결과"]
+ENV_MENU_LABEL = "⚙️ 환경관리"
+ENV_MENU_ITEMS = [
+    "🗂️ 카테고리 등록",
+    "📨 메일링리스트",
+    "📚 내부 자료",
+    "📧 템플릿 등록",
+    "⚙️ 환경설정",
+]
 
 
 def render_sidebar() -> str:
-    """그룹(뉴스레터 작성 / 환경 관리)별로 하위 메뉴를 버튼으로 그립니다.
-
-    선택된 메뉴는 st.session_state.menu 에 보관(현재 페이지 = 파란 버튼).
-    handle_reject_to_chat() 등이 남긴 '이동 예약(goto)'도 여기서 반영합니다.
-    """
+    """사이드바: 뉴스레터 작성 메뉴 + 접이식 환경관리 메뉴."""
     pending = st.session_state.pop("goto", None)
     if pending in PAGES:
         st.session_state.menu = pending
+        if pending in ENV_MENU_ITEMS:
+            st.session_state.env_menu_open = True
 
     current = st.session_state.menu
+    if current in ENV_MENU_ITEMS:
+        st.session_state.env_menu_open = True
+
+    env_open = st.session_state.env_menu_open
+
     with st.sidebar:
         ui.render_sidebar_brand()
-        for group, items in MENU_GROUPS.items():
-            ui.render_nav_group(group)
-            for label in items:
-                if st.button(label, key=f"nav_{label}", use_container_width=True,
-                             type="primary" if label == current else "secondary"):
+
+        ui.render_nav_group("뉴스레터 작성")
+        for label in NEWSLETTER_MENU_ITEMS:
+            if st.button(label, key=f"nav_{label}", use_container_width=True,
+                         type="primary" if label == current else "secondary"):
+                st.session_state.menu = label
+                st.rerun()
+
+        st.markdown('<div class="nc-nav-divider"></div>', unsafe_allow_html=True)
+
+        toggle_label = f"{'▼' if env_open else '▶'} {ENV_MENU_LABEL}"
+        if st.button(
+            toggle_label,
+            key="nav_env_toggle",
+            use_container_width=True,
+            type="primary" if env_open else "secondary",
+        ):
+            st.session_state.env_menu_open = not env_open
+            st.rerun()
+
+        if env_open:
+            for label in ENV_MENU_ITEMS:
+                if st.button(
+                    label,
+                    key=f"nav_sub_{label}",
+                    use_container_width=True,
+                    type="primary" if label == current else "secondary",
+                ):
                     st.session_state.menu = label
+                    st.session_state.env_menu_open = True
                     st.rerun()
+
     return st.session_state.menu
 
 

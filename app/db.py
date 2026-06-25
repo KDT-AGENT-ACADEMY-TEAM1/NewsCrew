@@ -206,19 +206,21 @@ def init_db() -> None:
     print(f"[DB] 접속 대상: {cfg['host']}:{cfg['port']}/{cfg['database']} (user={cfg['user']})")
     try:
         _create_tables_if_missing()    # schema.sql 의 모든 CREATE TABLE 실행
-        print("[DB] (1/7) 테이블 확인/생성 완료")
+        print("[DB] (1/8) 테이블 확인/생성 완료")
         _ensure_newsletter_columns()   # 기존 DB 호환: 빠진 컬럼 보강
-        print("[DB] (2/7) 컬럼 보강 확인 완료")
+        print("[DB] (2/8) 컬럼 보강 확인 완료")
         _seed_default_categories()     # 기본 카테고리
-        print("[DB] (3/7) 카테고리 시드 완료")
+        print("[DB] (3/8) 카테고리 시드 완료")
         _seed_settings()               # 환경설정 기본값
-        print("[DB] (4/7) 환경설정 시드 완료")
+        print("[DB] (4/8) 환경설정 시드 완료")
         _seed_newsletter_types()       # 생성 타입 기본값
-        print("[DB] (5/7) 생성 타입 시드 완료")
+        print("[DB] (5/8) 생성 타입 시드 완료")
+        _seed_review_checklist()       # 기본 검수 체크리스트
+        print("[DB] (6/8) 검수 체크리스트 시드 완료")
         _seed_subscribers()            # 기본 구독자(메일링리스트)
-        print("[DB] (6/7) 구독자 시드 완료")
+        print("[DB] (7/8) 구독자 시드 완료")
         _seed_templates()              # 기본 이메일 템플릿
-        print("[DB] (7/7) 이메일 템플릿 시드 완료")
+        print("[DB] (8/8) 이메일 템플릿 시드 완료")
         print("[DB] ✅ 데이터베이스 초기화 완료")
     except Exception as e:
         print(f"[DB] ❌ 초기화 건너뜀(연결/권한 확인): {e}")
@@ -441,6 +443,86 @@ def get_type_name(code: str | None) -> str | None:
         return None
     row = fetch_one("SELECT name FROM newsletter_type WHERE code = %s", (code,))
     return (row or {}).get("name") or code
+
+
+# --------------------------------------------------------------------------
+# 기본 검수 체크리스트 (review_checklist)
+#   카테고리 체크포인트가 없을 때 검수 노드가 사용합니다.
+# --------------------------------------------------------------------------
+DEFAULT_REVIEW_CHECKLIST = [
+    "첫 문단이 독자의 흥미를 끌고 글의 핵심을 예고하는가",
+    "친근하면서도 전문적인 어조가 일관되는가",
+    "핵심 정보가 구체적이고 독자에게 유익한가(일반론만 아님)",
+    "문장이 명확하고 군더더기 없이 이해하기 쉬운가",
+    "맺음말 또는 다음 행동(관심·구독 등) 유도가 있는가",
+]
+
+
+def _seed_review_checklist() -> None:
+    """기본 검수 체크리스트가 비어 있으면 시드 데이터를 넣습니다."""
+    row = fetch_one("SELECT COUNT(*) AS n FROM review_checklist")
+    if row and row.get("n", 0) > 0:
+        print(f"[DB]   검수 체크리스트: 기존 {row['n']}개 유지")
+        return
+    for order, label in enumerate(DEFAULT_REVIEW_CHECKLIST):
+        execute(
+            "INSERT INTO review_checklist (label, sort_order) VALUES (%s, %s)",
+            (label, order),
+        )
+    print(f"[DB]   검수 체크리스트: {len(DEFAULT_REVIEW_CHECKLIST)}개 추가")
+
+
+def list_review_checklist(active_only: bool = False) -> list[dict]:
+    """기본 검수 체크리스트 항목 목록."""
+    sql = "SELECT * FROM review_checklist "
+    sql += "WHERE is_active = 1 " if active_only else ""
+    return fetch_all(sql + "ORDER BY sort_order, id")
+
+
+def create_review_checklist_item(label: str, sort_order: int = 0) -> int:
+    """체크리스트 항목 추가."""
+    return execute(
+        "INSERT INTO review_checklist (label, sort_order) VALUES (%s, %s)",
+        (label.strip(), sort_order),
+    )
+
+
+def update_review_checklist_item(
+    item_id: int,
+    label: str | None = None,
+    sort_order: int | None = None,
+    is_active: bool | None = None,
+) -> int:
+    """체크리스트 항목 수정."""
+    fields: list[str] = []
+    params: list = []
+    if label is not None:
+        fields.append("label = %s")
+        params.append(label.strip())
+    if sort_order is not None:
+        fields.append("sort_order = %s")
+        params.append(sort_order)
+    if is_active is not None:
+        fields.append("is_active = %s")
+        params.append(1 if is_active else 0)
+    if not fields:
+        return 0
+    params.append(item_id)
+    return execute(
+        f"UPDATE review_checklist SET {', '.join(fields)} WHERE id = %s",
+        tuple(params),
+    )
+
+
+def delete_review_checklist_item(item_id: int) -> int:
+    """체크리스트 항목 삭제."""
+    return execute("DELETE FROM review_checklist WHERE id = %s", (item_id,))
+
+
+def get_default_review_checkpoints() -> list[str]:
+    """활성 기본 검수 체크포인트 문구 목록."""
+    rows = list_review_checklist(active_only=True)
+    return [r["label"] for r in rows if r.get("label")]
 
 
 # --------------------------------------------------------------------------

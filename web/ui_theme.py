@@ -1,7 +1,13 @@
 """NewsCrew Streamlit UI — 네이비·골드·그레이 디자인 시스템."""
 from __future__ import annotations
 
+import html
+import re
+
 import streamlit as st
+
+_REVIEW_ITEM_RE = re.compile(r"^(✅|⚠️|❌)\s+(.+?)\s+(\d+/\d+)\s+—\s+(.+)$")
+_STRUCTURAL_LABELS = frozenset({"제목", "소제목 구성", "분량", "가독성 형식"})
 
 
 def inject_global_css() -> None:
@@ -93,6 +99,41 @@ def inject_global_css() -> None:
             letter-spacing: 0.1em;
             text-transform: uppercase;
             color: var(--nc-gold) !important;
+        }
+
+        /* 환경관리 — 큰 접이식 상위 메뉴 */
+        section[data-testid="stSidebar"] .st-key-nav_env_toggle .stButton > button {
+            font-size: 0.98rem !important;
+            font-weight: 800 !important;
+            padding: 14px 16px !important;
+            margin-top: 18px;
+            letter-spacing: 0.01em;
+            border-radius: 10px !important;
+        }
+        section[data-testid="stSidebar"] .st-key-nav_env_toggle .stButton > button[kind="primary"] {
+            background: rgba(201, 162, 39, 0.22) !important;
+            color: #f5e6b8 !important;
+            border: 1px solid rgba(201, 162, 39, 0.55) !important;
+            box-shadow: inset 0 0 0 1px rgba(201, 162, 39, 0.15);
+        }
+        section[data-testid="stSidebar"] .st-key-nav_env_toggle .stButton > button[kind="secondary"] {
+            background: rgba(255, 255, 255, 0.05) !important;
+            border: 1px solid rgba(255, 255, 255, 0.14) !important;
+        }
+        section[data-testid="stSidebar"] [class*="st-key-nav_sub_"] {
+            padding-left: 10px;
+            border-left: 2px solid rgba(201, 162, 39, 0.35);
+            margin: 2px 0 2px 8px;
+        }
+        section[data-testid="stSidebar"] [class*="st-key-nav_sub_"] .stButton > button {
+            font-size: 0.82rem !important;
+            font-weight: 600 !important;
+            padding: 8px 12px !important;
+            min-height: 0 !important;
+        }
+        .nc-nav-divider {
+            margin: 14px 0 4px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
         }
 
         section[data-testid="stSidebar"] .stButton > button {
@@ -307,6 +348,28 @@ def inject_global_css() -> None:
         .badge.s-default   { background: var(--nc-gray-100); color: var(--nc-gray-600); }
         .nc-chip-row { margin: 0.3rem 0 0.8rem; }
         .nc-chip-row .label { color: var(--nc-muted); font-size: 0.84rem; margin-right: 6px; font-weight: 600; }
+        .nc-cat-section-label {
+            color: var(--nc-muted);
+            font-size: 0.82rem;
+            font-weight: 700;
+            margin: 0.55rem 0 0.25rem;
+            letter-spacing: 0.02em;
+        }
+        .nc-cat-tag {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 6px;
+            background: var(--nc-gray-100);
+            border: 1px solid var(--nc-border);
+            font-size: 0.86rem;
+            color: var(--nc-gray-800);
+            line-height: 1.4;
+            word-break: break-word;
+        }
+        div[data-testid="stVerticalBlock"]:has(.nc-cat-item-row) {
+            gap: 0.15rem;
+        }
+        .nc-cat-item-row { min-height: 0; }
 
         /* ── 결과 테이블 ── */
         .rhead {
@@ -453,6 +516,116 @@ def inject_global_css() -> None:
             margin: 10px 0;
             padding: 4px 14px;
             background: var(--nc-gray-50);
+        }
+
+        /* ── 검수 코멘트 ── */
+        .nc-review-box {
+            margin: 1rem 0 1.2rem;
+            padding: 14px 16px;
+            border-radius: var(--nc-radius-sm);
+            background: var(--nc-surface);
+            border: 1px solid var(--nc-border);
+            border-left: 3px solid var(--nc-gold);
+            box-shadow: var(--nc-shadow);
+        }
+        .nc-review-title {
+            font-weight: 800;
+            font-size: 0.94rem;
+            color: var(--nc-navy);
+            margin-bottom: 10px;
+        }
+        .nc-review-summary {
+            padding: 9px 12px;
+            border-radius: 8px;
+            font-weight: 700;
+            font-size: 0.88rem;
+            line-height: 1.45;
+            margin-bottom: 10px;
+        }
+        .nc-review-summary.pass {
+            background: rgba(46, 157, 99, 0.1);
+            color: #1a5c38;
+            border: 1px solid rgba(46, 157, 99, 0.28);
+        }
+        .nc-review-summary.fail {
+            background: rgba(229, 83, 75, 0.08);
+            color: #9b2c2c;
+            border: 1px solid rgba(229, 83, 75, 0.22);
+        }
+        .nc-review-section {
+            margin-bottom: 8px;
+        }
+        .nc-review-section-title {
+            font-size: 0.76rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            color: var(--nc-navy);
+            opacity: 0.75;
+            margin: 8px 0 5px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid var(--nc-border);
+        }
+        .nc-review-section:first-of-type .nc-review-section-title {
+            margin-top: 0;
+        }
+        .nc-review-details {
+            border: 1px solid var(--nc-border);
+            border-radius: 6px;
+            margin-bottom: 4px;
+            background: var(--nc-gray-50);
+            overflow: hidden;
+        }
+        .nc-review-details.pass { border-left: 3px solid #2e9d63; }
+        .nc-review-details.warn { border-left: 3px solid var(--nc-gold); }
+        .nc-review-details.fail { border-left: 3px solid #e5534b; }
+        .nc-review-details > summary {
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 10px;
+            cursor: pointer;
+            font-size: 0.84rem;
+            user-select: none;
+        }
+        .nc-review-details > summary::-webkit-details-marker { display: none; }
+        .nc-review-details .nc-review-icon { flex-shrink: 0; font-size: 0.92rem; }
+        .nc-review-details .nc-review-label {
+            font-weight: 700;
+            color: var(--nc-navy);
+            flex: 1;
+            min-width: 0;
+        }
+        .nc-review-details .nc-review-pts {
+            font-weight: 700;
+            color: var(--nc-gold-dark);
+            white-space: nowrap;
+            font-size: 0.82rem;
+        }
+        .nc-review-details .nc-review-toggle {
+            font-size: 0.74rem;
+            color: var(--nc-muted);
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .nc-review-details[open] .nc-review-toggle { color: var(--nc-gold-dark); }
+        .nc-review-details .nc-review-comment {
+            padding: 0 10px 8px 30px;
+            font-size: 0.81rem;
+            color: var(--nc-muted);
+            line-height: 1.5;
+            border-top: 1px dashed var(--nc-border);
+            margin: 0 8px 8px;
+            padding-top: 8px;
+        }
+        .nc-review-plain {
+            padding: 10px 12px;
+            border-radius: 8px;
+            background: var(--nc-gray-50);
+            font-size: 0.86rem;
+            line-height: 1.65;
+            color: var(--nc-gray-800);
+            white-space: pre-wrap;
         }
 
         /* ── 생성 진행 스피너 ── */
@@ -663,3 +836,94 @@ def render_generation_progress(
     parts.append(f'<p class="nc-gen-msg">{message}</p>')
     parts.append("</div>")
     return "".join(parts)
+
+
+def render_review_feedback(feedback: str, score: int | None = None) -> str:
+    """검수 코멘트(체크리스트)를 구역별·접이식 카드로 렌더링합니다."""
+    text = (feedback or "").strip()
+    if not text:
+        return ""
+
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    head = lines[0] if lines else text
+    check_source = "category"
+    if "[체크:default]" in head:
+        check_source = "default"
+        head = head.replace(" [체크:default]", "").replace("[체크:default]", "")
+    elif "[체크:category]" in head:
+        head = head.replace(" [체크:category]", "").replace("[체크:category]", "")
+    elif "[체크:fallback]" in head:
+        check_source = "fallback"
+        head = head.replace(" [체크:fallback]", "").replace("[체크:fallback]", "")
+    raw_items = lines[1:] if len(lines) > 1 else []
+
+    if "미달" in head or "❌" in head:
+        summary_cls = "fail"
+    elif "통과" in head or "✅" in head:
+        summary_cls = "pass"
+    else:
+        summary_cls = "pass"
+
+    structural: list[dict] = []
+    category: list[dict] = []
+    for line in raw_items:
+        parsed = _parse_review_line(line)
+        if parsed:
+            if parsed["label"] in _STRUCTURAL_LABELS:
+                structural.append(parsed)
+            else:
+                category.append(parsed)
+        else:
+            category.append({
+                "icon": "⚠️", "label": "기타", "pts": "-",
+                "comment": line, "cls": "warn",
+            })
+
+    parts: list[str] = [
+        '<div class="nc-review-box">',
+        '<div class="nc-review-title">🧾 검수 코멘트</div>',
+        f'<div class="nc-review-summary {summary_cls}">{html.escape(head)}</div>',
+    ]
+
+    if structural:
+        parts.append(_render_review_section("기본 구조 검수", structural))
+    if category:
+        quality_title = {
+            "default": "기본 검수 체크리스트",
+            "category": "카테고리별 체크포인트",
+            "fallback": "공통 품질 검수",
+        }.get(check_source, "품질·체크포인트 검수")
+        parts.append(_render_review_section(quality_title, category))
+    if not structural and not category and len(lines) <= 1:
+        parts.append(f'<div class="nc-review-plain">{html.escape(text)}</div>')
+
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _parse_review_line(line: str) -> dict | None:
+    m = _REVIEW_ITEM_RE.match(line.strip())
+    if not m:
+        return None
+    icon, label, pts, comment = m.groups()
+    cls = "pass" if icon == "✅" else ("warn" if icon == "⚠️" else "fail")
+    return {"icon": icon, "label": label, "pts": pts, "comment": comment, "cls": cls}
+
+
+def _render_review_section(title: str, items: list[dict]) -> str:
+    rows = "".join(_render_review_detail_item(it) for it in items)
+    return f'<div class="nc-review-section"><div class="nc-review-section-title">{title}</div>{rows}</div>'
+
+
+def _render_review_detail_item(item: dict) -> str:
+    return (
+        f'<details class="nc-review-details {item["cls"]}">'
+        f'<summary>'
+        f'<span class="nc-review-icon">{item["icon"]}</span>'
+        f'<span class="nc-review-label">{html.escape(item["label"])}</span>'
+        f'<span class="nc-review-pts">{html.escape(item["pts"])}</span>'
+        f'<span class="nc-review-toggle">상세</span>'
+        f"</summary>"
+        f'<div class="nc-review-comment">{html.escape(item["comment"])}</div>'
+        f"</details>"
+    )

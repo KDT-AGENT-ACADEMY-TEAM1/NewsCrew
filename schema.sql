@@ -176,3 +176,22 @@ CREATE TABLE IF NOT EXISTS newsletter_type (
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci
   COMMENT='뉴스레터 생성 타입';
+
+
+-- ------------------------------------------------------------
+-- 기본 검수 체크리스트 (카테고리 체크포인트 없을 때 사용)
+--   기본값은 app/db.py 의 _seed_review_checklist() 가 넣습니다.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS review_checklist (
+    id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '체크리스트 항목 ID',
+    label       VARCHAR(200)    NOT NULL                COMMENT '체크포인트 문구',
+    sort_order  INT             NOT NULL DEFAULT 0       COMMENT '정렬 순서',
+    is_active   TINYINT(1)      NOT NULL DEFAULT 1       COMMENT '사용 여부 (1:활성, 0:비활성)',
+    created_at  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP                          COMMENT '생성일시',
+    updated_at  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '수정일시',
+    PRIMARY KEY (id),
+    KEY idx_review_checklist_active (is_active, sort_order)
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci
+  COMMENT='기본 검수 체크리스트';

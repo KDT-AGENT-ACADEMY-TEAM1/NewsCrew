@@ -1,7 +1,7 @@
 """[노드] 검수 — 편집장 관점의 '체크리스트 기반' 자동 AI 검수.
 
   구조 체크(규칙)  : 제목/소제목/분량/형식 → 결정적으로 점수화
-  품질 체크(LLM)   : 리드/톤앤매너/정보가치/명확성/마무리 → ask_ai 로 평가
+  카테고리 체크   : interest_category.checkpoints 항목별 LLM 채점 (없으면 공통 품질 항목)
   → 항목별 점수를 합산(총 100점)하고, 환경설정의 '승인 기준 점수(pass_score)'로 통과 판정.
 
 검수 결과(점수/체크리스트 코멘트/상태)는 newsletter 테이블에 저장합니다.
@@ -13,8 +13,8 @@ import json
 
 from langgraph.config import get_config
 
-from ..categories import get_checkpoints
-from ..db import execute, get_int_setting
+from ..categories import get_checkpoints_for_categories
+from ..db import execute, get_default_review_checkpoints, get_int_setting
 from ..llm import ask_ai
 from ..state import NewsletterState, ReviewResult
 
@@ -38,14 +38,25 @@ def review_node(state: NewsletterState) -> NewsletterState:
     revision = state.get("revision_count", 0)
     print(f"[검수] 체크리스트 AI 검수 시작 ({revision}회차)")
 
-    # 이 보고서의 카테고리에 등록된 '주요 체크포인트'를 가져와 주제별 체크에 사용합니다.
-    checkpoints = get_checkpoints(state.get("category_id"))
+    # 카테고리에 등록된 체크포인트(쉼표·줄 단위)를 항목별로 검수합니다.
+    cat_ids = list(state.get("category_ids") or [])
+    cid = state.get("category_id")
+    if cid and cid not in cat_ids:
+        cat_ids.insert(0, cid)
+    checkpoints = get_checkpoints_for_categories(cat_ids)
+    checklist_source = "category"
+    if not checkpoints:
+        checkpoints = get_default_review_checkpoints()
+        checklist_source = "default" if checkpoints else "fallback"
+    if checkpoints:
+        src = "카테고리" if checklist_source == "category" else "기본"
+        print(f"[검수] {src} 체크포인트 {len(checkpoints)}개: {', '.join(checkpoints)}")
     score, checklist = _checklist_review(draft, checkpoints)
     pass_score = get_int_setting("pass_score", 60)
     passed = score >= pass_score
 
     head = (f"{'✅ 통과' if passed else '❌ 미달'} · 총점 {score}/100 "
-            f"(기준 {pass_score}점)\n")
+            f"(기준 {pass_score}점) [체크:{checklist_source}]\n")
     feedback = (head + checklist)[:990]   # review_feedback 컬럼(VARCHAR 1000) 보호
     review: ReviewResult = {"passed": passed, "score": score, "feedback": feedback}
 
@@ -67,7 +78,7 @@ def review_node(state: NewsletterState) -> NewsletterState:
 def _checklist_review(draft: str, checkpoints: list[str] | None = None) -> tuple[int, str]:
     """체크리스트 항목별로 채점하고, (총점, 체크리스트 코멘트)를 돌려줍니다.
 
-    checkpoints: 카테고리에 등록된 '주요 체크포인트' — 있으면 주제별 체크 항목이 추가됩니다.
+    checkpoints: 카테고리에 등록된 체크포인트 — 항목마다 개별 LLM 채점.
     """
     items = _structural_checks(draft) + _quality_checks(draft, checkpoints or [])
     total = sum(it["score"] for it in items)
@@ -115,29 +126,38 @@ def _structural_checks(draft: str) -> list[dict]:
     return items
 
 
-def _build_quality_spec(checkpoints: list[str]) -> list[tuple]:
-    """채점할 품질 항목 목록 (키, 표시명, 평가관점, 배점)을 만듭니다.
-
-    카테고리 체크포인트가 있으면 '주제 체크포인트' 항목을 추가하고,
-    배점은 항목 수에 맞춰 QUALITATIVE_TOTAL(60)을 고르게 나눠 줍니다.
-    """
-    spec = list(QUALITATIVE_ITEMS)   # (키, 표시명, 평가관점)
-    if checkpoints:
-        desc = "이 분야의 핵심 체크포인트를 충실히 다뤘는가 — " + "; ".join(checkpoints)
-        spec.append(("checkpoints", "주제 체크포인트", desc))
-
+def _allocate_points(spec: list[tuple[str, str, str]], total: int) -> list[tuple[str, str, str, int]]:
+    """채점 항목에 배점을 균등 분배합니다. (key, label, desc, pts)"""
     n = len(spec)
-    base = QUALITATIVE_TOTAL // n
-    remainder = QUALITATIVE_TOTAL - base * n
-    out = []
-    for i, (key, label, desc) in enumerate(spec):
-        pts = base + (1 if i < remainder else 0)   # 나머지는 앞쪽 항목에 1점씩
-        out.append((key, label, desc, pts))
-    return out
+    if n == 0:
+        return []
+    base = total // n
+    remainder = total - base * n
+    return [
+        (key, label, desc, base + (1 if i < remainder else 0))
+        for i, (key, label, desc) in enumerate(spec)
+    ]
+
+
+def _build_quality_spec(checkpoints: list[str]) -> list[tuple[str, str, str, int]]:
+    """채점할 품질/카테고리 항목 목록 (키, 표시명, 평가관점, 배점).
+
+    카테고리 체크포인트가 있으면 등록된 항목마다 개별 채점합니다.
+    없으면 공통 품질 항목(리드/톤 등)으로 대체합니다.
+    """
+    if checkpoints:
+        spec = [
+            (f"cp{i}", cp, f"다음 체크포인트를 충실히 반영했는가: {cp}")
+            for i, cp in enumerate(checkpoints)
+        ]
+        return _allocate_points(spec, QUALITATIVE_TOTAL)
+
+    spec = [(key, label, desc) for key, label, desc in QUALITATIVE_ITEMS]
+    return _allocate_points(spec, QUALITATIVE_TOTAL)
 
 
 def _quality_checks(draft: str, checkpoints: list[str]) -> list[dict]:
-    """LLM 기반 품질 체크 (리드/톤/가치/명확성/마무리 + 주제 체크포인트) — 총 60점."""
+    """LLM 기반 카테고리 체크포인트(또는 공통 품질) 채점 — 총 60점."""
     spec = _build_quality_spec(checkpoints)
 
     # 분량이 너무 적으면 LLM 호출 없이 0점 처리
