@@ -10,6 +10,7 @@ SMTP 환경변수(SMTP_HOST 등)가 없으면 '가짜(Mock) 모드'로 동작해
 from __future__ import annotations
 
 import os
+import re
 import smtplib
 from email.mime.text import MIMEText
 
@@ -54,9 +55,91 @@ def subscribers_for_category(category_id: int | None) -> list[dict]:
     return db.fetch_all("SELECT email, name FROM subscriber WHERE is_active = 1")
 
 
-def _send_one(addr: str, subject: str, body: str, cfg: dict) -> None:
-    """SMTP로 메일 한 통을 보냅니다. (본문은 일반 텍스트)"""
-    msg = MIMEText(body, "plain", "utf-8")
+def _inline_md(text: str) -> str:
+    """문장 안의 **굵게** 를 <strong> 으로 바꿉니다."""
+    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+
+
+def _markdown_to_html_body(markdown: str) -> str:
+    """마크다운 본문(##, -, > 등)을 인라인 스타일이 적용된 HTML 조각으로 바꿉니다.
+
+    이메일 클라이언트는 외부 CSS를 잘 못 읽으므로 스타일을 인라인으로 박아 넣습니다.
+    맨 위 '# 제목' 줄은 헤더에서 따로 보여 주므로 본문에서는 건너뜁니다.
+    """
+    html: list[str] = []
+    in_list = False
+    title_skipped = False
+
+    def close_list():
+        nonlocal in_list
+        if in_list:
+            html.append("</ul>")
+            in_list = False
+
+    for raw in (markdown or "").split("\n"):
+        line = raw.strip()
+        if not line:
+            close_list()
+            continue
+        if line.startswith("# ") and not title_skipped:
+            title_skipped = True            # 대제목은 헤더에 있으니 본문에서 제외
+            continue
+        if line.startswith(("- ", "* ")):
+            if not in_list:
+                html.append("<ul style='margin:10px 0 10px 20px; padding:0; color:#333;'>")
+                in_list = True
+            html.append(f"<li style='margin:5px 0; line-height:1.7; font-size:15px;'>{_inline_md(line[2:])}</li>")
+            continue
+        close_list()
+        if line.startswith("### "):
+            html.append(f"<h3 style='font-size:16px; color:#222; margin:18px 0 6px;'>{_inline_md(line[4:])}</h3>")
+        elif line.startswith("## "):
+            html.append("<h2 style='font-size:19px; color:#1a1a1a; margin:24px 0 10px; "
+                        "padding-bottom:6px; border-bottom:2px solid #eef0f4;'>"
+                        f"{_inline_md(line[3:])}</h2>")
+        elif line.startswith("# "):
+            html.append(f"<h2 style='font-size:20px; color:#111; margin:18px 0 10px;'>{_inline_md(line[2:])}</h2>")
+        elif line.startswith("> "):
+            html.append("<blockquote style='margin:12px 0; padding:10px 16px; "
+                        "border-left:4px solid #5681d0; background:#f5f7fb; color:#555;'>"
+                        f"{_inline_md(line[2:])}</blockquote>")
+        else:
+            html.append(f"<p style='margin:12px 0; line-height:1.8; color:#333; font-size:15px;'>{_inline_md(line)}</p>")
+
+    close_list()
+    return "\n".join(html)
+
+
+def build_newsletter_html(subject: str, markdown_body: str) -> str:
+    """마크다운 초안을 '뉴스레터 디자인' HTML 메일 본문으로 만듭니다."""
+    inner = _markdown_to_html_body(markdown_body)
+    unsub_url = os.getenv("UNSUBSCRIBE_URL", "#")   # 구독취소 링크 (환경변수로 지정 가능)
+    return (
+        "<div style=\"background:#eef1f5; padding:24px 12px; "
+        "font-family:'Apple SD Gothic Neo','Malgun Gothic',Helvetica,Arial,sans-serif;\">"
+        "<div style='max-width:640px; margin:0 auto; background:#ffffff; border-radius:14px; "
+        "overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,.08);'>"
+        # 헤더
+        "<div style='background:linear-gradient(135deg,#5681d0,#3b6fd4); padding:30px 34px; color:#ffffff;'>"
+        "<div style='font-size:12px; letter-spacing:1.5px; opacity:.85;'>📰 NEWSLETTER</div>"
+        f"<div style='font-size:23px; font-weight:700; margin-top:8px; line-height:1.35;'>{subject}</div>"
+        "</div>"
+        # 본문
+        f"<div style='padding:30px 34px;'>{inner}</div>"
+        # 푸터
+        "<div style='padding:18px 34px; background:#fafbfc; color:#9aa0a6; font-size:12px; "
+        "border-top:1px solid #eef0f4; line-height:1.7;'>"
+        "본 메일은 관심분야를 구독하신 분께 자동 발송되었습니다.<br>"
+        "ⓒ <strong style='color:#5a6066;'>NewsCrew 팀</strong> · "
+        f"<a href='{unsub_url}' style='color:#5681d0; text-decoration:underline;'>구독취소</a>"
+        "</div>"
+        "</div></div>"
+    )
+
+
+def _send_one(addr: str, subject: str, html_body: str, cfg: dict) -> None:
+    """SMTP로 HTML 메일 한 통을 보냅니다."""
+    msg = MIMEText(html_body, "html", "utf-8")
     msg["Subject"] = subject
     msg["From"] = cfg["from"]
     msg["To"] = addr
@@ -98,10 +181,11 @@ def send_newsletter(thread_id: str, category_id: int | None,
         _record_sends(thread_id, recipients)
         return {"recipients": len(emails), "sent": 0, "mock": True, "emails": emails}
 
+    html_body = build_newsletter_html(subject, body)   # 마크다운 → 뉴스레터 HTML
     sent_ok = []
     for r in recipients:
         try:
-            _send_one(r["email"], subject, body, cfg)
+            _send_one(r["email"], subject, html_body, cfg)
             sent_ok.append(r)
         except Exception as e:
             print(f"[메일] {r['email']} 발송 실패: {e}")

@@ -79,6 +79,11 @@ class CategoryIn(BaseModel):
     parent_id: Optional[int] = None
     description: Optional[str] = None
     sort_order: int = 0
+    checkpoints: list[str] = []
+
+
+class CheckpointsIn(BaseModel):
+    checkpoints: list[str] = []
 
 
 @app.get("/categories/flat")
@@ -96,8 +101,13 @@ def api_categories_list():
 @app.post("/categories")
 def api_categories_create(b: CategoryIn):
     new_id = cat.create_category(b.code, b.name, b.keywords, b.parent_id,
-                                 b.description, b.sort_order)
+                                 b.description, b.sort_order, b.checkpoints)
     return {"id": new_id}
+
+
+@app.put("/categories/{cid}/checkpoints")
+def api_categories_checkpoints(cid: int, b: CheckpointsIn):
+    return {"updated": cat.update_checkpoints(cid, b.checkpoints)}
 
 
 @app.delete("/categories/{cid}")
@@ -187,6 +197,10 @@ class RejectIn(BaseModel):
     feedback: str = ""
 
 
+class StatusIn(BaseModel):
+    status: str
+
+
 @app.get("/newsletters")
 def api_newsletters_list(category_id: Optional[int] = None):
     sql = (
@@ -272,10 +286,13 @@ def api_newsletters_approve(thread_id: str):
         raise HTTPException(404, "보고서를 찾을 수 없습니다.")
 
     # 카테고리 관심 구독자에게 메일 발송 + 발송 이력 기록
-    row = db.fetch_one("SELECT category_id, title, draft FROM newsletter WHERE thread_id = %s",
-                       (thread_id,))
-    mailer.send_newsletter(thread_id, row["category_id"],
-                           row["title"] or "뉴스레터", row["draft"] or "")
+    #   메일 제목 = "카테고리명 + 뉴스레터" (카테고리 없으면 그냥 '뉴스레터')
+    row = db.fetch_one("SELECT n.category_id, n.title, n.draft, c.name AS category "
+                       "FROM newsletter n "
+                       "LEFT JOIN interest_category c ON c.id = n.category_id "
+                       "WHERE n.thread_id = %s", (thread_id,))
+    subject = f"{row['category']} 뉴스레터" if row.get("category") else "뉴스레터"
+    mailer.send_newsletter(thread_id, row["category_id"], subject, row["draft"] or "")
     return api_newsletters_get(thread_id)
 
 
@@ -310,6 +327,16 @@ def api_newsletters_reject(thread_id: str, b: RejectIn):
         initial["type_code"] = row["news_type"]
     graph.invoke(initial, cfg)
     return api_newsletters_get(thread_id)
+
+
+@app.put("/newsletters/{thread_id}/status")
+def api_newsletters_status(thread_id: str, b: StatusIn):
+    """상태 값을 직접 수정합니다. (목록의 상태 선택박스용)"""
+    n = db.execute("UPDATE newsletter SET status = %s WHERE thread_id = %s",
+                   (b.status, thread_id))
+    if not n:
+        raise HTTPException(404, "보고서를 찾을 수 없습니다.")
+    return {"updated": n}
 
 
 @app.delete("/newsletters/{thread_id}")
