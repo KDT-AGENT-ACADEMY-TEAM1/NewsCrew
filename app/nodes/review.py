@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from langgraph.config import get_config
 
@@ -54,17 +55,25 @@ def review_node(state: NewsletterState) -> NewsletterState:
         src = "카테고리" if checklist_source == "category" else "기본"
         print(f"[검수] {src} 체크포인트 {len(checkpoints)}개: {', '.join(checkpoints)}")
 
-    score, checklist = _checklist_review(draft, checkpoints, type_name, type_desc)
+    score, checklist, items = _checklist_review(draft, checkpoints, type_name, type_desc)
     pass_score = get_int_setting("pass_score", 60)
     passed = score >= pass_score
 
     head = (f"{'✅ 통과' if passed else '❌ 미달'} · 총점 {score}/100 "
             f"(기준 {pass_score}점) [체크:{checklist_source}]\n")
-    feedback = (head + checklist)[:990]
-    review: ReviewResult = {"passed": passed, "score": score, "feedback": feedback}
-
     revision_count = revision + 1
-    status = "awaiting_approval" if passed else "writing"
+    max_rev = state.get("max_revisions", 2)
+    status = "awaiting_approval" if passed or revision_count >= max_rev else "writing"
+    suggested_fix = _suggested_fix(items)
+    feedback = _build_feedback(head, checklist, suggested_fix)
+    review: ReviewResult = {
+        "passed": passed,
+        "score": score,
+        "feedback": feedback,
+        "deduction_reasons": _deduction_reasons(items),
+        "suggested_fix": suggested_fix,
+    }
+
     print(f"[검수] 결과: {'통과' if passed else '미달'} (점수 {score} / 기준 {pass_score})")
     _save_review(review, status, revision_count)
     return {
@@ -80,7 +89,7 @@ def _checklist_review(
     checkpoints: list[str] | None = None,
     type_name: str = "",
     type_desc: str = "",
-) -> tuple[int, str]:
+) -> tuple[int, str, list[dict]]:
     items = _structural_checks(draft) + _quality_checks(
         draft, checkpoints or [], type_name, type_desc,
     )
@@ -89,39 +98,63 @@ def _checklist_review(
     for it in items:
         mark = "✅" if it["score"] >= it["max"] else ("⚠️" if it["score"] > 0 else "❌")
         lines.append(f"{mark} {it['label']} {it['score']}/{it['max']} — {it['comment']}")
-    return total, "\n".join(lines)
+    return total, "\n".join(lines), items
 
 
-def _item(label: str, max_pts: int, score: int, comment: str) -> dict:
-    return {"label": label, "max": max_pts, "score": max(0, min(score, max_pts)),
+def _item(label: str, max_pts: int, score: int, comment: str, key: str = "") -> dict:
+    return {"key": key, "label": label, "max": max_pts, "score": max(0, min(score, max_pts)),
             "comment": comment}
+
+
+def _plain_text_len(text: str) -> int:
+    """마크다운 장식을 일부 제거한 본문 글자 수."""
+    cleaned = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    cleaned = re.sub(r"[*_`>\-]", "", cleaned)
+    cleaned = re.sub(r"\s+", "", cleaned)
+    return len(cleaned)
 
 
 def _structural_checks(draft: str) -> list[dict]:
     text = draft or ""
-    lines = text.split("\n")
-    has_title = any(ln.startswith("# ") for ln in lines)
-    section_count = sum(1 for ln in lines if ln.startswith("## "))
-    length = len(text.strip())
-    has_bullets = any(ln.strip().startswith(("- ", "* ")) for ln in lines)
-    paragraphs = [b for b in text.split("\n\n") if b.strip()]
+    lines = text.splitlines()
+    stripped_lines = [ln.strip() for ln in lines if ln.strip()]
+    first_line = stripped_lines[0] if stripped_lines else ""
+    has_title = first_line.startswith("# ") and not first_line.startswith("## ")
+    section_count = sum(
+        1 for ln in stripped_lines
+        if ln.startswith("## ") and not ln.startswith("### ")
+    )
+    length = _plain_text_len(text)
+    has_bullets = any(
+        re.match(r"^([-*]\s+|\d+\.\s+)", ln)
+        for ln in stripped_lines
+    )
+    paragraphs = [
+        block.strip()
+        for block in re.split(r"\n\s*\n", text)
+        if block.strip() and not block.strip().startswith("#")
+    ]
 
     items: list[dict] = []
     items.append(_item(
         "제목", 10, 10 if has_title else 0,
-        "맨 위 '# 제목'이 있습니다." if has_title else "맨 위 '# 제목' 줄이 필요합니다."))
-    sec_pts = 10 if section_count >= 2 else (5 if section_count == 1 else 0)
+        "첫 줄에 '# 제목'이 있습니다." if has_title else "첫 번째 줄에 '# 제목' 형식의 제목이 필요합니다.",
+        "structure_title"))
+    sec_pts = 10 if section_count >= 2 else (4 if section_count == 1 else 0)
     items.append(_item(
         "소제목 구성", 10, sec_pts,
-        f"소제목(##) {section_count}개." + ("" if section_count >= 2 else " 2개 이상 권장.")))
-    len_pts = 10 if length >= 400 else (6 if length >= 200 else 2)
+        f"소제목(##) {section_count}개." + ("" if section_count >= 2 else " 2개 이상 필요합니다."),
+        "structure_sections"))
+    len_pts = 10 if length >= 400 else (6 if length >= 250 else (3 if length >= 120 else 0))
     items.append(_item(
         "분량", 10, len_pts,
-        f"본문 {length}자." + ("" if length >= 400 else " 다소 짧습니다(400자+ 권장).")))
+        f"본문 {length}자." + ("" if length >= 400 else " 400자 이상을 권장합니다."),
+        "readability_length"))
     fmt_pts = 10 if (has_bullets or len(paragraphs) >= 3) else 5
     items.append(_item(
         "가독성 형식", 10, fmt_pts,
-        "목록/문단 구분이 적절합니다." if fmt_pts == 10 else "문단 나눔이나 목록을 더 활용하세요."))
+        "목록 또는 문단 구분이 적절합니다." if fmt_pts == 10 else "목록, 번호 목록, 문단 구분을 더 활용하세요.",
+        "readability_format"))
     return items
 
 
@@ -142,13 +175,11 @@ def _build_quality_spec(
     type_name: str = "",
     type_desc: str = "",
 ) -> list[tuple[str, str, str, int]]:
-    if checkpoints:
-        spec = [
-            (f"cp{i}", cp, f"다음 체크포인트를 충실히 반영했는가: {cp}")
-            for i, cp in enumerate(checkpoints)
-        ]
-    else:
-        spec = [(key, label, desc) for key, label, desc in QUALITATIVE_ITEMS]
+    spec = [(key, label, desc) for key, label, desc in QUALITATIVE_ITEMS]
+    spec.extend(
+        (f"cp{i}", cp, f"다음 체크포인트를 충실히 반영했는가: {cp}")
+        for i, cp in enumerate(checkpoints or [], start=1)
+    )
     if type_name:
         spec.append((
             "style_guide",
@@ -167,8 +198,8 @@ def _quality_checks(
     spec = _build_quality_spec(checkpoints, type_name, type_desc)
 
     if not draft or len(draft.strip()) < 80:
-        return [_item(label, pts, 0, "본문이 비어 있거나 너무 짧습니다.")
-                for _key, label, _desc, pts in spec]
+        return [_item(label, pts, 0, "본문이 비어 있거나 너무 짧습니다.", key)
+                for key, label, _desc, pts in spec]
 
     rubric = "\n".join(f"- {key}: {desc}" for key, _label, desc, _pts in spec)
     keys = ", ".join(f'"{key}"' for key, *_ in spec)
@@ -183,15 +214,15 @@ def _quality_checks(
     answer = ask_ai(system, f"--- 뉴스레터 초안 ---\n{draft}")
 
     if not answer or answer.startswith("[가짜 AI 답변]"):
-        return [_item(label, pts, int(pts * 0.75), "테스트 모드: 임시 점수")
-                for _key, label, _desc, pts in spec]
+        return [_item(label, pts, int(pts * 0.3), "테스트 모드: 실제 LLM 검수가 실행되지 않았습니다.", key)
+                for key, label, _desc, pts in spec]
     try:
-        clean = answer.strip().replace("```json", "").replace("```", "")
+        clean = _extract_json(answer)
         data = json.loads(clean)
     except Exception as e:
         print(f"[검수] 품질 JSON 파싱 실패 → 기본값 사용: {e}")
-        return [_item(label, pts, int(pts * 0.6), "AI 응답 해석 실패로 기본 점수 적용")
-                for _key, label, _desc, pts in spec]
+        return [_item(label, pts, int(pts * 0.3), "AI 응답 해석 실패로 검수 통과를 보류합니다.", key)
+                for key, label, _desc, pts in spec]
 
     items: list[dict] = []
     for key, label, _desc, pts in spec:
@@ -201,8 +232,63 @@ def _quality_checks(
         except (TypeError, ValueError):
             ratio = 0.6
         comment = str(raw.get("comment") or "").strip() or "-"
-        items.append(_item(label, pts, round(pts * ratio), comment[:80]))
+        items.append(_item(label, pts, round(pts * ratio), comment[:120], key))
     return items
+
+
+def _extract_json(answer: str) -> str:
+    clean = answer.strip().replace("```json", "").replace("```", "").strip()
+    start = clean.find("{")
+    end = clean.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return clean[start:end + 1]
+    return clean
+
+
+def _deduction_reasons(items: list[dict]) -> dict[str, str]:
+    groups = {
+        "structure": [],
+        "expression": [],
+        "readability": [],
+        "tone": [],
+        "value": [],
+    }
+    for item in items:
+        if item["score"] >= item["max"]:
+            continue
+        key = item.get("key", "")
+        line = f"{item['label']}: {item['comment']}"
+        if key.startswith("structure_"):
+            groups["structure"].append(line)
+        elif key in {"lead", "clarity", "closing", "style_guide"}:
+            groups["expression"].append(line)
+        elif key.startswith("readability_"):
+            groups["readability"].append(line)
+        elif key == "tone":
+            groups["tone"].append(line)
+        else:
+            groups["value"].append(line)
+    return {k: "\n".join(v) if v else "없음" for k, v in groups.items()}
+
+
+def _suggested_fix(items: list[dict]) -> str:
+    weak = sorted(
+        (it for it in items if it["score"] < it["max"]),
+        key=lambda it: (it["score"] / it["max"] if it["max"] else 1),
+    )
+    if not weak:
+        return "없음"
+    lines = [
+        f"- {it['label']}: {it['comment']}"
+        for it in weak[:5]
+    ]
+    return "다음 항목을 우선 보완하세요.\n" + "\n".join(lines)
+
+
+def _build_feedback(head: str, checklist: str, suggested_fix: str) -> str:
+    # web.ui_theme.render_review_feedback() expects every line after the head
+    # to match the checklist item format. suggested_fix is returned separately.
+    return (head + checklist)[:990]
 
 
 def _save_review(review: ReviewResult, status: str, revision_count: int) -> None:
@@ -213,11 +299,13 @@ def _save_review(review: ReviewResult, status: str, revision_count: int) -> None
     if not thread_id:
         return
     try:
-        execute(
+        updated = execute(
             "UPDATE newsletter "
             "SET review_score = %s, review_feedback = %s, status = %s, revision_count = %s "
             "WHERE thread_id = %s",
             (review.get("score"), review.get("feedback"), status, revision_count, thread_id),
         )
+        if not updated:
+            print(f"[검수] 갱신된 보고서가 없습니다(thread_id={thread_id}).")
     except Exception as e:
         print(f"[검수] 점수 DB 저장 실패(무시하고 진행): {e}")
