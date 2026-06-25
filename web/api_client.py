@@ -136,8 +136,35 @@ def generate(keywords, category_id=None, type_code=None) -> dict:
                                            "type_code": type_code})
 
 
-def approve(thread_id: str) -> dict:
-    return _post(f"/newsletters/{thread_id}/approve")
+def approve(thread_id: str, template_code: str | None = None) -> dict:
+    suffix = f"?template_code={template_code}" if template_code else ""
+    return _post(f"/newsletters/{thread_id}/approve{suffix}")
+
+
+# --------------------------- 이메일 템플릿 ---------------------------
+def list_templates() -> list[dict]:
+    return _get("/templates")
+
+
+def create_template(code: str, name: str, html: str):
+    return _post("/templates", {"code": code, "name": name, "html": html})
+
+
+def delete_template(tid: int):
+    return _delete(f"/templates/{tid}")
+
+
+# --------------------------- 내부 자료 (Chroma) ---------------------------
+def knowledge_status() -> dict:
+    return _get("/knowledge/status")
+
+
+def knowledge_reindex() -> dict:
+    return _post("/knowledge/reindex")
+
+
+def knowledge_search(q: str, k: int = 3) -> list:
+    return _get("/knowledge/search", q=q, k=k)
 
 
 def reject(thread_id: str, feedback: str) -> dict:

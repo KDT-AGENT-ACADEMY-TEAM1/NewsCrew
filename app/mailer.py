@@ -110,31 +110,38 @@ def _markdown_to_html_body(markdown: str) -> str:
     return "\n".join(html)
 
 
-def build_newsletter_html(subject: str, markdown_body: str) -> str:
-    """마크다운 초안을 '뉴스레터 디자인' HTML 메일 본문으로 만듭니다."""
+# 템플릿이 하나도 없을 때를 대비한 최소 폴백
+_FALLBACK_TEMPLATE = (
+    "<div style=\"max-width:640px;margin:0 auto;font-family:'Malgun Gothic',Arial,sans-serif;\">"
+    "<h1 style='font-size:22px;'>{{subject}}</h1>{{body}}"
+    "<hr><p style='font-size:12px;color:#999;'>ⓒ NewsCrew 팀 · "
+    "<a href='{{unsubscribe_url}}'>구독취소</a></p></div>"
+)
+
+
+def render_template(template_html: str | None, subject: str, markdown_body: str) -> str:
+    """템플릿 HTML 의 치환자({{subject}}/{{body}}/{{unsubscribe_url}})를 채워 메일 HTML을 만듭니다.
+
+    {{body}} 에는 마크다운 초안을 HTML로 변환한 내용이 들어갑니다.
+    """
     inner = _markdown_to_html_body(markdown_body)
-    unsub_url = os.getenv("UNSUBSCRIBE_URL", "#")   # 구독취소 링크 (환경변수로 지정 가능)
-    return (
-        "<div style=\"background:#eef1f5; padding:24px 12px; "
-        "font-family:'Apple SD Gothic Neo','Malgun Gothic',Helvetica,Arial,sans-serif;\">"
-        "<div style='max-width:640px; margin:0 auto; background:#ffffff; border-radius:14px; "
-        "overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,.08);'>"
-        # 헤더
-        "<div style='background:linear-gradient(135deg,#5681d0,#3b6fd4); padding:30px 34px; color:#ffffff;'>"
-        "<div style='font-size:12px; letter-spacing:1.5px; opacity:.85;'>📰 NEWSLETTER</div>"
-        f"<div style='font-size:23px; font-weight:700; margin-top:8px; line-height:1.35;'>{subject}</div>"
-        "</div>"
-        # 본문
-        f"<div style='padding:30px 34px;'>{inner}</div>"
-        # 푸터
-        "<div style='padding:18px 34px; background:#fafbfc; color:#9aa0a6; font-size:12px; "
-        "border-top:1px solid #eef0f4; line-height:1.7;'>"
-        "본 메일은 관심분야를 구독하신 분께 자동 발송되었습니다.<br>"
-        "ⓒ <strong style='color:#5a6066;'>NewsCrew 팀</strong> · "
-        f"<a href='{unsub_url}' style='color:#5681d0; text-decoration:underline;'>구독취소</a>"
-        "</div>"
-        "</div></div>"
-    )
+    unsub_url = os.getenv("UNSUBSCRIBE_URL", "#")
+    html = template_html or _FALLBACK_TEMPLATE
+    return (html.replace("{{subject}}", subject)
+                .replace("{{body}}", inner)
+                .replace("{{unsubscribe_url}}", unsub_url))
+
+
+def _resolve_template_html(template_code: str | None) -> str | None:
+    """발송에 쓸 템플릿 HTML을 정합니다.
+
+    1) 지정된 template_code, 2) 환경설정의 기본 템플릿, 순으로 찾습니다.
+    """
+    code = template_code or db.get_setting("default_template_code", "default")
+    html = db.get_template_html(code)
+    if html is None and code != "default":
+        html = db.get_template_html("default")   # 마지막 폴백
+    return html
 
 
 def _send_one(addr: str, subject: str, html_body: str, cfg: dict) -> None:
@@ -167,9 +174,10 @@ def _record_sends(thread_id: str, recipients: list[dict]) -> None:
 
 
 def send_newsletter(thread_id: str, category_id: int | None,
-                    subject: str, body: str) -> dict:
+                    subject: str, body: str, template_code: str | None = None) -> dict:
     """카테고리 관심 구독자에게 뉴스레터를 발송하고, 발송 이력을 기록합니다.
 
+    template_code: 사용할 이메일 템플릿(없으면 환경설정의 기본 템플릿).
     돌려주는 값: {recipients: 대상 수, sent: 실제 발송 수, mock: 가짜모드 여부, emails: [...]}
     """
     recipients = subscribers_for_category(category_id)
@@ -177,11 +185,14 @@ def send_newsletter(thread_id: str, category_id: int | None,
     cfg = _smtp_config()
 
     if cfg is None:   # 가짜 모드 — 실제 발송 없이 대상만 기록/출력
-        print(f"[메일][테스트모드] '{subject}' → {len(emails)}명 대상: {emails}")
+        print(f"[메일][테스트모드] '{subject}'(템플릿={template_code or '기본'}) "
+              f"→ {len(emails)}명 대상: {emails}")
         _record_sends(thread_id, recipients)
         return {"recipients": len(emails), "sent": 0, "mock": True, "emails": emails}
 
-    html_body = build_newsletter_html(subject, body)   # 마크다운 → 뉴스레터 HTML
+    # 선택된(또는 기본) 템플릿에 제목·본문을 채워 메일 HTML 생성
+    template_html = _resolve_template_html(template_code)
+    html_body = render_template(template_html, subject, body)
     sent_ok = []
     for r in recipients:
         try:
