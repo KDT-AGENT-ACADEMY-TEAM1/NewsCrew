@@ -464,8 +464,43 @@ def _result_detail(thread_id: str):
     st.markdown(md_to_html(snap.get("draft", "")), unsafe_allow_html=True)
 
     review = snap.get("review") or {}
-    if review.get("feedback"):
-        st.caption(f"🧾 검수 코멘트: {review['feedback']} (점수 {review.get('score')})")
+    if review:
+        st.write("---")
+        st.subheader("🔍 AI 편집장 품질 검수 결과")
+        
+        score = review.get("score", 0)
+        passed = review.get("passed", False)
+        
+        col_score, col_status = st.columns(2)
+        with col_score:
+            st.metric(label="품질 점수", value=f"{score} / 100점")
+        with col_status:
+            status_text = "🟢 통과" if passed else "🔴 품질 미달 (재작성 필요)"
+            st.metric(label="검수 결과", value=status_text)
+            
+        feedback_val = review.get("feedback")
+        if feedback_val:
+            st.info(f"**✍️ 편집장 총평:**  \n{feedback_val}")
+            
+        reasons = review.get("deduction_reasons")
+        if isinstance(reasons, dict) and any(val and val != "없음" for val in reasons.values()):
+            with st.expander("📊 항목별 상세 감점 사유 확인", expanded=not passed):
+                for cat_key, cat_name in [
+                    ("structure", "🧱 구조 (도입부 Hooking & 문단 연결성)"),
+                    ("expression", "✨ 표현 (상투적 표현 & 동의어 반복)"),
+                    ("readability", "📱 가독성 (정보 완급 조절 & 예시/비유)"),
+                    ("tone", "🗣️ 톤앤매너 (어미 일관성 & 기계적 중립성)"),
+                    ("value", "💎 정보가치 (핵심 요약 & 할루시네이션)")
+                ]:
+                    reason_desc = reasons.get(cat_key, "없음")
+                    if reason_desc and reason_desc != "없음":
+                        st.markdown(f"**{cat_name}**")
+                        st.caption(reason_desc)
+                        st.divider()
+
+        suggested_fix = review.get("suggested_fix")
+        if suggested_fix and suggested_fix != "없음":
+            st.warning(f"**🛠️ AI 작성자를 위한 피드백 및 행동 지침:**  \n{suggested_fix}")
 
     # 발송 전(sent 아님)이면 세션과 무관하게 승인/반려 가능
     if snap["status"] != "sent":
