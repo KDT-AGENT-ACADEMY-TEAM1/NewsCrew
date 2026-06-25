@@ -320,7 +320,6 @@ def page_input():
                 selected_types.append(t)
 
 
-
     with st.form("chat_form", clear_on_submit=True):
         st.markdown(
             "메시지 * (필수) "
