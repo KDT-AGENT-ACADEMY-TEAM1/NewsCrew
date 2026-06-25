@@ -136,6 +136,13 @@ class TypeIn(BaseModel):
     sort_order: int = 0
 
 
+class TypeUpdateIn(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
 @app.get("/types")
 def api_types_list(active_only: int = 0):
     return db.list_newsletter_types(active_only=bool(active_only))
@@ -144,6 +151,12 @@ def api_types_list(active_only: int = 0):
 @app.post("/types")
 def api_types_create(b: TypeIn):
     return {"id": db.create_newsletter_type(b.code, b.name, b.description, b.sort_order)}
+
+
+@app.put("/types/{tid}")
+def api_types_update(tid: int, b: TypeUpdateIn):
+    return {"updated": db.update_newsletter_type(
+        tid, b.name, b.description, b.sort_order, b.is_active)}
 
 
 @app.delete("/types/{tid}")
