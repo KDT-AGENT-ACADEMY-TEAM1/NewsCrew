@@ -204,16 +204,28 @@ def inject_global_css() -> None:
             margin: 0 0 10px;
         }
         .nc-chat-bot {
-            margin: 6px 0 32px;
+            margin: 6px 0 22px;
+        }
+        .nc-chat-item.nc-chat-last {
+            margin-bottom: 6px !important;
         }
         [data-testid="stMarkdownContainer"]:has(.nc-chat-user) {
             margin-bottom: 8px;
         }
         [data-testid="stMarkdownContainer"]:has(.nc-chat-bot) {
             margin-top: 6px;
-            margin-bottom: 28px;
+            margin-bottom: 20px;
         }
-        .nc-chat { margin-bottom: 1rem; }
+        [data-testid="stMarkdownContainer"]:has(.nc-chat-last) {
+            margin-bottom: 4px !important;
+        }
+        .nc-form-section {
+            margin-top: 4px;
+        }
+        .nc-form-section [data-testid="stVerticalBlock"] {
+            gap: 0.65rem;
+        }
+        .nc-chat { margin-bottom: 0; }
         .msg {
             display: flex;
             gap: 10px;
@@ -581,11 +593,12 @@ def render_nav_group(label: str) -> None:
     st.markdown(f'<div class="nc-nav-group">{label}</div>', unsafe_allow_html=True)
 
 
-def chat_bubble(role: str, content: str) -> str:
+def chat_bubble(role: str, content: str, *, last: bool = False) -> str:
     avatar = "👤" if role == "user" else "✦"
     css = "user" if role == "user" else "bot"
+    last_cls = " nc-chat-last" if last else ""
     return (
-        f'<div class="nc-chat-item nc-chat-{css}">'
+        f'<div class="nc-chat-item nc-chat-{css}{last_cls}">'
         f'<div class="msg {css}">'
         f'<div class="msg-avatar">{avatar}</div>'
         f'<div class="msg-body">{content}</div>'
