@@ -240,7 +240,7 @@ def _make_excerpt(document: str, topic: str, max_chars: int = 700) -> str:
 
 @tool
 def search_rag(topic: str) -> str:
-    """사내 벡터DB에서 주제와 관련된 회사/산업 데이터를 검색합니다.
+    """ 벡터DB에서 주제와 관련된 회사/산업 데이터를 검색합니다.
 
     Args:
         topic: 검색할 주제, 회사명, 종목코드, 산업 키워드.
