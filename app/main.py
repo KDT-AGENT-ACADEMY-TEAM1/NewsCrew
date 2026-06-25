@@ -170,18 +170,15 @@ def api_subscribers_delete(sid: int):
 class SettingsIn(BaseModel):
     values: dict
 
-
 @app.get("/settings")
 def api_settings_get():
     return db.get_settings()
-
 
 @app.put("/settings")
 def api_settings_update(b: SettingsIn):
     for k, v in b.values.items():
         db.update_setting(k, v)
     return {"updated": len(b.values)}
-
 
 # ==========================================================================
 # 뉴스레터(보고서) — 목록/상세/생성/승인/반려/삭제
