@@ -445,12 +445,11 @@ def handle_reject_to_chat(thread_id: str, feedback: str):
     request_text = feedback or "다시 작성해 주세요."
     st.session_state.messages.append(
         {"role": "user", "content": f"↩️ 수정 요청: {request_text}"})
-    with st.spinner("수정 요청을 반영해 다시 작성하는 중... ✍️"):
-        try:
-            snap = api.reject(thread_id, feedback)
-        except Exception as e:
-            st.error(f"재작성 실패: {e}")
-            return
+    try:
+        snap = api.reject(thread_id, feedback)
+    except Exception as e:
+        st.error(f"재작성 실패: {e}")
+        return
     push_report_message(snap, type_name=snap.get("type_label"), done_label="재작성 완료!")
     st.session_state.goto = "📝 뉴스레터작성"
     st.rerun()
@@ -495,7 +494,7 @@ def _result_list():
 
     with st.container(key="resulttbl"):
         widths = [1.5, 1.4, 1.2, 1.9, 1.8, 0.6, 1.5, 0.6]
-        headers = ["작성일", "관심영역", "타입", "메일내용", "상태", "점수", "관리", ""]
+        headers = ["작성일", "관심영역", "타입", "제목", "상태", "점수", "관리", ""]
         status_codes = list(STATUS_LABELS.keys())
         head = st.columns(widths, vertical_alignment="center")
         for col, title in zip(head, headers):
@@ -507,13 +506,13 @@ def _result_list():
             created = str(r["created_at"])[:16]
             category = r.get("category") or "직접입력"
             news_type = r.get("type_label") or r.get("news_type") or "-"
-            excerpt = draft_excerpt(r.get("draft") or "", 50) or "-"
+            title = (r.get("title") or "").strip() or draft_title(r.get("draft") or "")
             score = r.get("review_score")
             score_txt = score if score is not None else "–"
             c[0].markdown(f"<div class='rcell muted'>{created}</div>", unsafe_allow_html=True)
             c[1].markdown(f"<div class='rcell'>{category}</div>", unsafe_allow_html=True)
             c[2].markdown(f"<div class='rcell'>{news_type}</div>", unsafe_allow_html=True)
-            c[3].markdown(f"<div class='rcell'>{excerpt}</div>", unsafe_allow_html=True)
+            c[3].markdown(f"<div class='rcell'>{title}</div>", unsafe_allow_html=True)
             # 상태: 선택박스로 바로 수정 (변경 시 API로 저장)
             cur_status = r["status"] if r["status"] in status_codes else status_codes[0]
             new_status = c[4].selectbox(
@@ -550,7 +549,7 @@ def _delete_report(thread_id: str):
 
 
 def _result_detail(thread_id: str):
-    """보고서 하나의 본문 + 승인/반려 화면."""
+    """보고서 하나의 본문 + 승인/반려 화면 (앵커 네비 + 세 구역 세로 배치)."""
     try:
         snap = api.get_newsletter(thread_id)
     except Exception as e:
@@ -570,23 +569,42 @@ def _result_detail(thread_id: str):
 
     type_label = snap.get("type_label")
     type_html = (f" · 타입: <b>{type_label}</b>" if type_label else "")
+    title = (snap.get("title") or "").strip() or draft_title(snap.get("draft", ""))
+    st.markdown(
+        f"<h3 style='margin:0.2rem 0 0.8rem;color:var(--nc-navy);'>{title}</h3>",
+        unsafe_allow_html=True,
+    )
     st.markdown(
         f"상태: {status_badge(snap.get('status'))} "
         f"<span style='color:var(--nc-muted);'>· 재작성 {snap.get('revision_count', 0)}회{type_html}</span>",
         unsafe_allow_html=True,
     )
-    st.markdown(md_to_html(snap.get("draft", "")), unsafe_allow_html=True)
 
     review = snap.get("review") or {}
-    if review.get("feedback"):
-        st.markdown(
-            ui.render_review_feedback(review["feedback"], review.get("score")),
-            unsafe_allow_html=True,
-        )
+    is_sent = snap["status"] == "sent"
 
-    reasons = review.get("deduction_reasons")
-    if isinstance(reasons, dict) and any(val and val != "없음" for val in reasons.values()):
-        with st.expander("📊 항목별 상세 감점 사유 확인", expanded=not review.get("passed", True)):
+    ui.render_result_detail_nav()
+
+    st.markdown('<div id="nc-result-gen" class="nc-result-section-anchor"></div>', unsafe_allow_html=True)
+    with st.container(key="result_sec_gen"):
+        ui.render_result_section_label("📝", "생성결과", "작성된 뉴스레터 본문", "gen")
+        st.markdown("**생성된 뉴스레터 본문**")
+        st.markdown(md_to_html(snap.get("draft", "")), unsafe_allow_html=True)
+
+    st.markdown('<div id="nc-result-review" class="nc-result-section-anchor"></div>', unsafe_allow_html=True)
+    with st.container(key="result_sec_review"):
+        ui.render_result_section_label("🔍", "검수결과", "AI 검수 피드백 및 반려", "review")
+        if review.get("feedback"):
+            st.markdown(
+                ui.render_review_feedback(review["feedback"], review.get("score")),
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("아직 검수 결과가 없습니다.")
+
+        reasons = review.get("deduction_reasons")
+        if isinstance(reasons, dict) and any(val and val != "없음" for val in reasons.values()):
+            st.markdown("**📊 항목별 상세 감점 사유**")
             for cat_key, cat_name in [
                 ("structure", "🧱 구조 (도입부 Hooking & 문단 연결성)"),
                 ("expression", "✨ 표현 (상투적 표현 & 동의어 반복)"),
@@ -600,57 +618,79 @@ def _result_detail(thread_id: str):
                     st.caption(reason_desc)
                     st.divider()
 
-    suggested_fix = review.get("suggested_fix")
-    if suggested_fix and suggested_fix != "없음":
-        st.warning(f"**🛠️ AI 작성자를 위한 피드백 및 행동 지침:**  \n{suggested_fix}")
+        suggested_fix = review.get("suggested_fix")
+        if suggested_fix and suggested_fix != "없음":
+            st.warning(f"**🛠️ AI 작성자를 위한 피드백 및 행동 지침:**  \n{suggested_fix}")
 
-    # 발송 전(sent 아님)이면 세션과 무관하게 승인/반려 가능
-    if snap["status"] != "sent":
-        feedback = st.text_input(
-            "반려 시 수정 요청(선택)",
-            placeholder="예: 더 짧고 캐주얼하게",
-            key=f"reject_fb_{thread_id}",
-        )
-        if st.button("↩️ 반려 → 재작성", use_container_width=True, key=f"reject_{thread_id}"):
-            handle_reject_to_chat(thread_id, feedback.strip())
-
-        st.divider()
-        st.markdown("**📧 발송**")
-        tpl_code = None
-        try:
-            templates = api.list_templates()
-        except Exception:
-            templates = []
-        if templates:
-            codes = [t["code"] for t in templates]
-            name_by = {t["code"]: t["name"] for t in templates}
-            default_code = _default_template_code()
-            idx = codes.index(default_code) if default_code in codes else 0
-            tpl_code = st.selectbox(
-                "발송 시 이메일 템플릿",
-                codes,
-                index=idx,
-                format_func=lambda c: name_by.get(c, c),
-                key=f"tpl_{thread_id}",
-                help="승인·발송할 때 적용할 HTML 템플릿을 선택하세요.",
+        if not is_sent:
+            st.divider()
+            st.markdown("**↩️ 반려 → 재작성**")
+            feedback = st.text_input(
+                "반려 시 수정 요청(선택)",
+                placeholder="예: 더 짧고 캐주얼하게",
+                key=f"reject_fb_{thread_id}",
             )
-        if st.button("✅ 승인 → 발송", use_container_width=True, key=f"approve_{thread_id}"):
-            try:
-                st.session_state.snap = api.approve(thread_id, tpl_code)
-            except Exception as e:
-                st.error(f"발송 실패: {e}")
-            st.rerun()
-    else:
-        st.success("✅ 메일 발송 완료!")
-        # 누구에게 언제 보냈는지 발송 내역 표시
-        sends = snap.get("sends") or []
-        if sends:
-            st.markdown(f"**📬 발송 내역** · 총 {len(sends)}명")
-            for s in sends:
-                nm = f" ({s['name']})" if s.get("name") else ""
-                st.write(f"- {s['email']}{nm} · {s['sent_at']}")
+            if st.button("↩️ 반려 → 재작성", use_container_width=True, key=f"reject_{thread_id}"):
+                with st.spinner("반려 처리 중입니다... ✍️"):
+                    handle_reject_to_chat(thread_id, feedback.strip())
+
+    st.markdown('<div id="nc-result-mail" class="nc-result-section-anchor"></div>', unsafe_allow_html=True)
+    with st.container(key="result_sec_mail"):
+        ui.render_result_section_label("📧", "메일발송", "템플릿 선택·미리보기·승인 발송", "mail")
+        if is_sent:
+            st.success("✅ 메일 발송 완료!")
+            sends = snap.get("sends") or []
+            if sends:
+                st.markdown(f"**📬 발송 내역** · 총 {len(sends)}명")
+                for s in sends:
+                    nm = f" ({s['name']})" if s.get("name") else ""
+                    st.write(f"- {s['email']}{nm} · {s['sent_at']}")
+            else:
+                st.caption("이 카테고리에 관심 있는 구독자가 없어 발송 대상이 없었습니다.")
         else:
-            st.caption("이 카테고리에 관심 있는 구독자가 없어 발송 대상이 없었습니다.")
+            st.markdown("**발송 설정**")
+            tpl_code = None
+            try:
+                templates = api.list_templates()
+            except Exception:
+                templates = []
+            if templates:
+                codes = [t["code"] for t in templates]
+                name_by = {t["code"]: t["name"] for t in templates}
+                tpl_by_code = {t["code"]: t for t in templates}
+                default_code = _default_template_code()
+                idx = codes.index(default_code) if default_code in codes else 0
+                tpl_code = st.selectbox(
+                    "발송 시 이메일 템플릿",
+                    codes,
+                    index=idx,
+                    format_func=lambda c: name_by.get(c, c),
+                    key=f"tpl_{thread_id}",
+                    help="승인·발송할 때 적용할 HTML 템플릿을 선택하세요.",
+                )
+                if tpl_code in tpl_by_code:
+                    st.markdown("**👁️ 발송 미리보기**")
+                    st.caption(
+                        f"템플릿: **{name_by.get(tpl_code, tpl_code)}** · "
+                        f"메일 제목: **{title}**"
+                    )
+                    preview_html = _render_email_preview(
+                        tpl_by_code[tpl_code].get("html"),
+                        title,
+                        snap.get("draft", ""),
+                    )
+                    st.components.v1.html(preview_html, height=420, scrolling=True)
+            else:
+                st.warning("등록된 이메일 템플릿이 없습니다. 환경관리에서 템플릿을 먼저 등록하세요.")
+
+            st.divider()
+            if st.button("✅ 승인 → 발송", use_container_width=True, key=f"approve_{thread_id}"):
+                with st.spinner("발송 중입니다... 📧"):
+                    try:
+                        st.session_state.snap = api.approve(thread_id, tpl_code)
+                    except Exception as e:
+                        st.error(f"발송 실패: {e}")
+                st.rerun()
 
 
 # ==========================================================================
@@ -670,14 +710,16 @@ def userlists():
         st.error(f"API 호출 실패 — 서버(8000) 실행을 확인하세요: {e}")
         return
     label_to_id = {row["label"]: row["id"] for row in catalog}
+    id_to_label = {row["id"]: row["label"] for row in catalog}
+    category_labels = list(label_to_id.keys())
 
     with st.form("add_sub_form", clear_on_submit=True):
         email = st.text_input("구독자 이메일 *", placeholder="예: reader@example.com")
         name = st.text_input("이름(선택)", placeholder="예: 홍길동")
         picked = st.multiselect(
-            "관심분야 선택 (여러 개 가능)",
-            options=list(label_to_id.keys()),
-            placeholder="예: AI/기술 > 생성형 AI",
+            "관심분야 (여러 개 선택 가능)",
+            options=category_labels,
+            placeholder="예: AI/기술, 경제/금융 …",
         )
         added = st.form_submit_button("➕ 추가")
 
@@ -687,12 +729,16 @@ def userlists():
             st.warning("올바른 이메일 형식이 아닙니다.")
         else:
             try:
-                api.create_subscriber(em, name.strip() or None,
-                                      [label_to_id[label] for label in picked])
-                st.success(f"{em} 추가됨!")
+                res = api.create_subscriber(
+                    em, name.strip() or None, [label_to_id[label] for label in picked],
+                )
+                if res.get("created", True):
+                    st.success(f"{em} 추가됨!")
+                else:
+                    st.success(f"{em} — 이미 등록된 이메일입니다. 관심분야를 갱신했습니다.")
                 st.rerun()
             except Exception as e:
-                st.error(f"추가 실패 (이메일 중복 등 확인): {e}")
+                st.error(f"추가 실패: {e}")
 
     st.divider()
 
@@ -705,14 +751,33 @@ def userlists():
     for s in subs:
         c1, c2 = st.columns([6, 1])
         nm = f" ({s['name']})" if s.get("name") else ""
-        cats = s.get("categories") or "관심분야 미선택"
+        cat_ids = s.get("category_ids") or []
+        cat_names = s.get("categories") or ""
+        cats_display = cat_names if cat_names else "관심분야 미선택"
         c1.markdown(
-            ui.list_card(f"{s['email']}{nm}", f"관심분야: {cats}"),
+            ui.list_card(f"{s['email']}{nm}", f"관심분야: {cats_display}"),
             unsafe_allow_html=True,
         )
         if c2.button("🗑️", key=f"delsub_{s['id']}", help="삭제"):
             api.delete_subscriber(s["id"])
             st.rerun()
+        with c1.expander("✏️ 관심분야 편집"):
+            default_labels = [id_to_label[cid] for cid in cat_ids if cid in id_to_label]
+            edited = st.multiselect(
+                "관심분야 (여러 개 선택 가능)",
+                options=category_labels,
+                default=default_labels,
+                key=f"subcats_{s['id']}",
+            )
+            if st.button("저장", key=f"subcatsave_{s['id']}"):
+                try:
+                    api.update_subscriber_categories(
+                        s["id"], [label_to_id[label] for label in edited],
+                    )
+                    st.success("관심분야를 저장했습니다.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
 
 
 # ==========================================================================
@@ -732,16 +797,6 @@ def _parse_checkpoints_lines(text: str) -> list[str]:
     out: list[str] = []
     for line in (text or "").split("\n"):
         s = line.strip()
-        if s and s not in out:
-            out.append(s)
-    return out
-
-
-def _parse_checkpoints_input(text: str) -> list[str]:
-    """체크포인트 일괄 입력 — 줄 단위 또는 쉼표(,) 구분. (환경설정용)"""
-    out: list[str] = []
-    for part in (text or "").replace("\n", ",").split(","):
-        s = part.strip()
         if s and s not in out:
             out.append(s)
     return out
@@ -994,7 +1049,7 @@ def _settings_review_checklist():
     st.markdown("### ✅ 기본 검수 체크리스트")
     st.caption(
         "카테고리에 체크포인트가 없을 때 검수에 사용합니다. "
-        "한 줄에 하나, 또는 쉼표(,)로 여러 항목을 등록할 수 있습니다."
+        "한 줄에 하나, 엔터로 구분해 입력하세요."
     )
 
     try:
@@ -1003,66 +1058,35 @@ def _settings_review_checklist():
         st.error(f"체크리스트를 불러오지 못했습니다: {e}")
         return
 
-    with st.form("add_review_checklist_form", clear_on_submit=True):
-        labels_text = st.text_area(
-            "체크포인트 추가",
-            placeholder="예: 핵심 개념을 쉽게 설명했는가, 실제 사례를 제시했는가",
-            height=90,
-        )
-        added = st.form_submit_button("➕ 체크포인트 추가")
+    current_text = "\n".join(it["label"] for it in items)
 
-    if added:
-        labels = _parse_checkpoints_input(labels_text)
+    with st.form("review_checklist_form"):
+        labels_text = st.text_area(
+            "체크포인트 (한 줄에 하나 — 엔터로 구분)",
+            value=current_text,
+            placeholder=(
+                "예:\n"
+                "첫 문단이 독자의 흥미를 끌고 글의 핵심을 예고하는가\n"
+                "핵심 정보가 구체적이고 독자에게 유익한가"
+            ),
+            height=220,
+        )
+        saved = st.form_submit_button("💾 저장", use_container_width=True)
+
+    if saved:
+        labels = _parse_checkpoints_lines(labels_text)
         if not labels:
-            st.warning("추가할 체크포인트를 입력하세요.")
+            st.warning("체크포인트를 한 줄 이상 입력하세요.")
         else:
             try:
-                api.create_review_checklist_bulk(labels)
-                st.success(f"체크포인트 {len(labels)}개를 추가했습니다!")
+                api.replace_review_checklist(labels)
+                st.success(f"체크포인트 {len(labels)}개를 저장했습니다!")
                 st.rerun()
             except Exception as e:
-                st.error(f"추가 실패: {e}")
+                st.error(f"저장 실패: {e}")
 
-    if not items:
-        st.info("등록된 기본 검수 체크리스트가 없습니다. 위에서 추가하세요.")
-        return
-
-    st.markdown(
-        f"<p style='color:var(--nc-muted);font-size:.9rem;'>총 <b>{len(items)}</b>개 등록됨</p>",
-        unsafe_allow_html=True,
-    )
-    for it in items:
-        c1, c2 = st.columns([6, 1])
-        active = "" if it.get("is_active", 1) else " · ⛔비활성"
-        c1.markdown(
-            ui.list_card(f"#{it['sort_order']} {it['label']}{active}", "-"),
-            unsafe_allow_html=True,
-        )
-        if c2.button("🗑️", key=f"delrc_{it['id']}", help="삭제"):
-            try:
-                api.delete_review_checklist_item(it["id"])
-                st.rerun()
-            except Exception as e:
-                st.error(f"삭제 실패: {e}")
-        with c1.expander("✏️ 수정"):
-            new_label = st.text_input("체크포인트", value=it["label"], key=f"rclabel_{it['id']}")
-            new_order = st.number_input(
-                "정렬 순서", min_value=0, value=int(it.get("sort_order") or 0),
-                step=1, key=f"rcorder_{it['id']}",
-            )
-            new_active = st.checkbox(
-                "사용", value=bool(it.get("is_active", 1)), key=f"rcactive_{it['id']}",
-            )
-            if st.button("저장", key=f"rcsave_{it['id']}"):
-                try:
-                    api.update_review_checklist_item(
-                        it["id"], label=new_label.strip(), sort_order=int(new_order),
-                        is_active=new_active,
-                    )
-                    st.success("저장했습니다.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"저장 실패: {e}")
+    if items:
+        st.caption(f"현재 {len(items)}개 등록됨")
 
 
 # ==========================================================================
@@ -1084,6 +1108,19 @@ def _default_template_code() -> str:
     except Exception:
         pass
     return "default"
+
+
+def _render_email_preview(template_html: str | None, subject: str, draft: str) -> str:
+    """발송 시와 동일한 방식으로 이메일 HTML 미리보기를 만듭니다."""
+    try:
+        from app.mailer import render_template
+        return render_template(template_html, subject or "뉴스레터", draft or "")
+    except Exception:
+        body = md_to_html(draft or "")
+        tpl = template_html or "<div><h1>{{subject}}</h1>{{body}}</div>"
+        return (tpl.replace("{{subject}}", subject or "뉴스레터")
+                .replace("{{body}}", body)
+                .replace("{{unsubscribe_url}}", "#"))
 
 
 def page_templates():

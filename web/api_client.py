@@ -13,6 +13,17 @@ BASE = os.getenv("API_BASE", "http://127.0.0.1:80")
 _TIMEOUT = 600   # 생성(그래프 실행)은 오래 걸릴 수 있어 넉넉히
 
 
+def _api_error(r: requests.Response) -> str:
+  try:
+      body = r.json()
+      detail = body.get("detail")
+      if isinstance(detail, str):
+          return detail
+  except Exception:
+      pass
+  return r.text or f"HTTP {r.status_code}"
+
+
 def _get(path: str, **params):
     r = requests.get(BASE + path, params={k: v for k, v in params.items() if v is not None},
                      timeout=_TIMEOUT)
@@ -22,13 +33,15 @@ def _get(path: str, **params):
 
 def _post(path: str, payload: dict | None = None):
     r = requests.post(BASE + path, json=payload or {}, timeout=_TIMEOUT)
-    r.raise_for_status()
+    if r.status_code >= 400:
+        raise RuntimeError(_api_error(r))
     return r.json()
 
 
 def _put(path: str, payload: dict | None = None):
     r = requests.put(BASE + path, json=payload or {}, timeout=_TIMEOUT)
-    r.raise_for_status()
+    if r.status_code >= 400:
+        raise RuntimeError(_api_error(r))
     return r.json()
 
 
@@ -125,6 +138,10 @@ def create_review_checklist_bulk(labels: list[str]):
     return _post("/review-checklist/bulk", {"labels": labels})
 
 
+def replace_review_checklist(labels: list[str]):
+    return _put("/review-checklist", {"labels": labels})
+
+
 def update_review_checklist_item(item_id: int, label=None, sort_order=None, is_active=None):
     payload = {}
     if label is not None:
@@ -148,6 +165,10 @@ def list_subscribers() -> list[dict]:
 def create_subscriber(email, name=None, category_ids=None):
     return _post("/subscribers", {"email": email, "name": name,
                                   "category_ids": category_ids or []})
+
+
+def update_subscriber_categories(sid: int, category_ids: list[int]):
+    return _put(f"/subscribers/{sid}/categories", {"category_ids": category_ids})
 
 
 def delete_subscriber(sid: int):

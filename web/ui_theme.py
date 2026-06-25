@@ -400,6 +400,121 @@ def inject_global_css() -> None:
             line-height: 1.4;
         }
 
+        /* ── 생성 결과 상세 — 앵커 네비 & 구역 ── */
+        .nc-result-nav {
+            display: flex;
+            gap: 0.55rem;
+            margin: 1.1rem 0 1.6rem;
+            padding: 0.45rem;
+            background: var(--nc-surface);
+            border-radius: var(--nc-radius);
+            border: 1px solid var(--nc-border);
+            box-shadow: var(--nc-shadow);
+            position: sticky;
+            top: 0.35rem;
+            z-index: 50;
+        }
+        .nc-result-nav a {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.15rem;
+            padding: 0.7rem 0.55rem;
+            border-radius: var(--nc-radius-sm);
+            text-decoration: none !important;
+            font-weight: 700;
+            font-size: 0.92rem;
+            line-height: 1.25;
+            border: 2px solid transparent;
+            transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+        }
+        .nc-result-nav a:hover {
+            transform: translateY(-1px);
+        }
+        .nc-result-nav a.nc-result-nav--gen {
+            color: #1a2744;
+            background: rgba(26, 39, 68, 0.07);
+        }
+        .nc-result-nav a.nc-result-nav--gen:hover {
+            border-color: #1a2744;
+            background: rgba(26, 39, 68, 0.12);
+        }
+        .nc-result-nav a.nc-result-nav--review {
+            color: #8a6d12;
+            background: rgba(201, 162, 39, 0.14);
+        }
+        .nc-result-nav a.nc-result-nav--review:hover {
+            border-color: var(--nc-gold);
+            background: rgba(201, 162, 39, 0.22);
+        }
+        .nc-result-nav a.nc-result-nav--mail {
+            color: #1e5a8a;
+            background: rgba(46, 107, 158, 0.1);
+        }
+        .nc-result-nav a.nc-result-nav--mail:hover {
+            border-color: #2e6b9e;
+            background: rgba(46, 107, 158, 0.16);
+        }
+        .nc-result-nav-sub {
+            font-size: 0.72rem;
+            font-weight: 500;
+            opacity: 0.78;
+        }
+        .nc-result-section-anchor {
+            scroll-margin-top: 5.75rem;
+            height: 0;
+            margin: 0;
+            padding: 0;
+        }
+        .st-key-result_sec_gen,
+        .st-key-result_sec_review,
+        .st-key-result_sec_mail {
+            background: var(--nc-surface);
+            border: 1px solid var(--nc-border);
+            border-radius: var(--nc-radius);
+            padding: 0.35rem 1.15rem 1.15rem;
+            margin-bottom: 1.75rem;
+            box-shadow: var(--nc-shadow);
+        }
+        .st-key-result_sec_gen {
+            border-top: 4px solid #1a2744;
+        }
+        .st-key-result_sec_review {
+            border-top: 4px solid var(--nc-gold);
+        }
+        .st-key-result_sec_mail {
+            border-top: 4px solid #2e6b9e;
+        }
+        .nc-result-section-label {
+            display: flex;
+            align-items: baseline;
+            flex-wrap: wrap;
+            gap: 0.35rem 0.65rem;
+            margin: 0.65rem 0 1rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid var(--nc-border);
+        }
+        .nc-result-section-label .nc-result-section-icon {
+            font-size: 1.35rem;
+            line-height: 1;
+        }
+        .nc-result-section-label .nc-result-section-title {
+            font-size: 1.12rem;
+            font-weight: 800;
+            color: var(--nc-navy);
+        }
+        .nc-result-section-label .nc-result-section-desc {
+            flex: 1 1 100%;
+            font-size: 0.84rem;
+            font-weight: 500;
+            color: var(--nc-muted);
+            margin-left: 2rem;
+        }
+        .nc-result-section-label--gen .nc-result-section-title { color: #1a2744; }
+        .nc-result-section-label--review .nc-result-section-title { color: #8a6d12; }
+        .nc-result-section-label--mail .nc-result-section-title { color: #1e5a8a; }
+
         /* ── 리스트 카드 ── */
         .nc-list-card {
             padding: 14px 18px;
@@ -926,4 +1041,66 @@ def _render_review_detail_item(item: dict) -> str:
         f"</summary>"
         f'<div class="nc-review-comment">{html.escape(item["comment"])}</div>'
         f"</details>"
+    )
+
+
+def render_result_detail_nav() -> None:
+    """생성 결과 상세 — 구역 앵커 네비(내용 숨김 없이 스크롤 이동)."""
+    import streamlit.components.v1 as components
+
+    st.markdown(
+        """
+        <nav class="nc-result-nav" aria-label="생성 결과 구역 이동">
+          <a class="nc-result-nav--gen" href="#nc-result-gen">
+            📝 생성결과
+            <span class="nc-result-nav-sub">뉴스레터 본문</span>
+          </a>
+          <a class="nc-result-nav--review" href="#nc-result-review">
+            🔍 검수결과
+            <span class="nc-result-nav-sub">피드백·반려</span>
+          </a>
+          <a class="nc-result-nav--mail" href="#nc-result-mail">
+            📧 메일발송
+            <span class="nc-result-nav-sub">템플릿·발송</span>
+          </a>
+        </nav>
+        """,
+        unsafe_allow_html=True,
+    )
+    components.html(
+        """
+        <script>
+        (function () {
+          const doc = window.parent.document;
+          doc.querySelectorAll(".nc-result-nav a[href^='#']").forEach(function (a) {
+            a.addEventListener("click", function (e) {
+              e.preventDefault();
+              const id = this.getAttribute("href").slice(1);
+              const el = doc.getElementById(id);
+              if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+            });
+          });
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
+def render_result_section_label(
+    icon: str,
+    title: str,
+    subtitle: str,
+    variant: str,
+) -> None:
+    """구역 제목 라벨."""
+    st.markdown(
+        f"""
+        <div class="nc-result-section-label nc-result-section-label--{html.escape(variant)}">
+          <span class="nc-result-section-icon">{icon}</span>
+          <span class="nc-result-section-title">{html.escape(title)}</span>
+          <span class="nc-result-section-desc">{html.escape(subtitle)}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )

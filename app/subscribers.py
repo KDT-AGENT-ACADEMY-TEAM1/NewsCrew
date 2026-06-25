@@ -11,13 +11,14 @@ from __future__ import annotations
 
 
 def list_subscribers() -> list[dict]:
-    """구독자 목록을 조회합니다. 관심분야명은 쉼표로 이어 한 칸에 담아 줍니다.
+    """구독자 목록을 조회합니다. 관심분야는 id 목록과 표시명을 함께 돌려줍니다.
 
-    각 항목: {id, email, name, is_active, categories: "AI/기술, 과학"}
+    각 항목: {id, email, name, is_active, category_ids: [1,2], categories: "AI/기술, 과학"}
     """
     from .db import fetch_all
-    return fetch_all(
+    rows = fetch_all(
         "SELECT s.id, s.email, s.name, s.is_active, "
+        "       GROUP_CONCAT(c.id ORDER BY c.sort_order, c.id) AS category_ids, "
         "       GROUP_CONCAT(c.name ORDER BY c.sort_order, c.id SEPARATOR ', ') AS categories "
         "FROM subscriber s "
         "LEFT JOIN subscriber_interest si ON si.subscriber_id = s.id "
@@ -25,19 +26,69 @@ def list_subscribers() -> list[dict]:
         "GROUP BY s.id, s.email, s.name, s.is_active "
         "ORDER BY s.id"
     )
+    for r in rows:
+        r["category_ids"] = _parse_category_ids(r.get("category_ids"))
+    return rows
+
+
+def _parse_category_ids(raw) -> list[int]:
+    if not raw:
+        return []
+    return [int(x) for x in str(raw).split(",") if str(x).strip().isdigit()]
+
+
+def _normalize_category_ids(category_ids: list[int] | None) -> list[int]:
+    """중복 제거된 관심분야 id 목록."""
+    out: list[int] = []
+    for cid in category_ids or []:
+        if cid and cid not in out:
+            out.append(int(cid))
+    return out
+
+
+def _validate_category_ids(category_ids: list[int]) -> None:
+    """존재하는 관심분야 id 인지 확인합니다. (없으면 ValueError)"""
+    if not category_ids:
+        return
+    from .db import fetch_all
+    placeholders = ", ".join(["%s"] * len(category_ids))
+    rows = fetch_all(
+        f"SELECT id FROM interest_category WHERE id IN ({placeholders}) AND is_active = 1",
+        tuple(category_ids),
+    )
+    found = {r["id"] for r in rows}
+    missing = [cid for cid in category_ids if cid not in found]
+    if missing:
+        raise ValueError(f"존재하지 않는 관심분야 ID입니다: {missing}")
 
 
 def create_subscriber(
     email: str,
     name: str | None = None,
     category_ids: list[int] | None = None,
-) -> int:
-    """구독자를 추가하고 선택한 관심분야들을 연결합니다. (새 구독자 id 반환)
+) -> tuple[int, bool]:
+    """구독자를 추가하고 선택한 관심분야들을 연결합니다.
 
-    구독자 INSERT 와 관심분야 INSERT 를 하나의 연결(트랜잭션)에서 처리해,
-    중간에 실패하면 통째로 롤백되도록 합니다. (이메일 중복이면 예외 발생)
+    Returns:
+        (subscriber_id, created) — created=False 이면 기존 이메일의 관심분야를 갱신했습니다.
     """
-    from .db import connection
+    from .db import connection, execute, fetch_one
+
+    email = (email or "").strip().lower()
+    if not email:
+        raise ValueError("이메일은 필수입니다.")
+
+    cat_ids = _normalize_category_ids(category_ids)
+    _validate_category_ids(cat_ids)
+
+    existing = fetch_one("SELECT id FROM subscriber WHERE email = %s", (email,))
+    if existing:
+        sid = existing["id"]
+        if name:
+            execute("UPDATE subscriber SET name = %s WHERE id = %s", (name.strip(), sid))
+        update_subscriber_categories(sid, cat_ids)
+        return sid, False
+
     with connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -45,7 +96,32 @@ def create_subscriber(
                 (email, name),
             )
             subscriber_id = cur.lastrowid
-            for category_id in category_ids or []:
+            for category_id in cat_ids:
+                cur.execute(
+                    "INSERT INTO subscriber_interest (subscriber_id, category_id) "
+                    "VALUES (%s, %s)",
+                    (subscriber_id, category_id),
+                )
+    return subscriber_id, True
+
+
+def update_subscriber_categories(subscriber_id: int, category_ids: list[int] | None) -> int:
+    """구독자의 관심분야(여러 개)를 갱신합니다."""
+    from .db import connection, fetch_one
+
+    if not fetch_one("SELECT id FROM subscriber WHERE id = %s", (subscriber_id,)):
+        raise ValueError("구독자를 찾을 수 없습니다.")
+
+    cat_ids = _normalize_category_ids(category_ids)
+    _validate_category_ids(cat_ids)
+
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM subscriber_interest WHERE subscriber_id = %s",
+                (subscriber_id,),
+            )
+            for category_id in cat_ids:
                 cur.execute(
                     "INSERT INTO subscriber_interest (subscriber_id, category_id) "
                     "VALUES (%s, %s)",
