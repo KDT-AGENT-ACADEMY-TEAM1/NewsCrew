@@ -202,8 +202,8 @@ def page_input():
         open_report(detail_id)
         return
 
-    st.markdown('<div class="nc-chat">', unsafe_allow_html=True)
-    for m in st.session_state.messages:
+    messages = st.session_state.messages
+    for i, m in enumerate(messages):
         content = m["content"]
         report_id = m.get("report_id")
         if report_id and "<span class='link-hint'>" in content:
@@ -211,7 +211,10 @@ def page_input():
                 "<span class='link-hint'>더보기 →</span>",
                 f"<a class='link-hint' href='?detail={report_id}'>더보기 →</a>",
             )
-        st.markdown(ui.chat_bubble(m["role"], content), unsafe_allow_html=True)
+        st.markdown(
+            ui.chat_bubble(m["role"], content, last=(i == len(messages) - 1)),
+            unsafe_allow_html=True,
+        )
 
     # (1-2) 생성 예약(pending) — 진행 카드 1개만 표시 후 키워드 추출·API 실행
     pending = st.session_state.pending
@@ -268,7 +271,8 @@ def page_input():
             st.error(f"생성 실패 — API 서버(8000)가 실행 중인지 확인하세요: {e}")
         st.session_state.pending = None
         st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="nc-form-section">', unsafe_allow_html=True)
 
     # (2) 카테고리·타입 선택 + 메시지 입력 (통합 생성)
     try:
