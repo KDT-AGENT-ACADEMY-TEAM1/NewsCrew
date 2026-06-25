@@ -27,7 +27,7 @@ __all__ = [
     # LLM
     "ask_ai", "_get_llm", "_model_name",
     # 도구
-    "search_news", "search_stock", "TOOLS_LIST", "TOOLS_MAP",
+    "search_news", "search_stock", "search_rag","TOOLS_LIST", "TOOLS_MAP",
     # 노드
     "research_node", "route_after_research", "tools_node",
     "write_node", "review_node", "send_node",

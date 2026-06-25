@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+import re
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..llm import _get_llm
@@ -117,9 +119,63 @@ def research_node(state: NewsletterState) -> NewsletterState:
     
     # ② 도구 호출 없이 '글'로만 답했다면(tool_calls가 비어있다면) 그게 곧 리서치 최종 결과입니다.
     if not response.tool_calls and getattr(response, "content", ""):
-        update["research"] = response.content
-
+        title, research = _parse_title_and_content(response.content)
+        if title:
+            update["title"] = title
+        update["research"] = research
+    
+    
     return update
+
+
+def _parse_title_and_content(raw: str) -> tuple[str, str]:
+    """Extract title/content from the LLM's YAML-like response.
+
+    Expected shape:
+        title: "..."
+        content: |
+          # ...
+
+    Falls back to a markdown H1 or the first non-empty line when the model
+    returns a plain markdown report.
+    """
+    text = (raw or "").strip()
+    cleaned = _strip_code_fence(text)
+
+    try:
+        parsed = yaml.safe_load(cleaned)
+    except Exception:
+        parsed = None
+
+    if isinstance(parsed, dict):
+        title = str(parsed.get("title") or "").strip()
+        content = str(parsed.get("content") or "").strip()
+        if title or content:
+            return title[:255], content or cleaned
+
+    title_match = re.search(r"(?m)^title\s*:\s*[\"']?(.*?)[\"']?\s*$", cleaned)
+    content_match = re.search(r"(?ms)^content\s*:\s*\|?\s*\n(.*)$", cleaned)
+
+    title = title_match.group(1).strip() if title_match else ""
+    content = content_match.group(1).strip() if content_match else cleaned
+    if title_match and not content_match:
+        content = re.sub(r"(?m)^title\s*:.*\n?", "", cleaned, count=1).strip()
+
+    if not title:
+        h1_match = re.search(r"(?m)^#\s+(.+)$", content)
+        if h1_match:
+            title = h1_match.group(1).strip()
+        else:
+            title = next((line.strip("# ").strip() for line in content.splitlines() if line.strip()), "")
+
+    return title[:255], content
+
+
+def _strip_code_fence(text: str) -> str:
+    match = re.match(r"^```(?:yaml|yml|json|markdown|md)?\s*\n(?P<body>.*)\n```$", text, re.DOTALL)
+    if match:
+        return match.group("body").strip()
+    return text
 
 # ==========================================================================
 # STEP 2-c. 조건부 분기 — 도구를 더 쓸지 / 작성 단계로 갈지

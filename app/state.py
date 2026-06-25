@@ -42,6 +42,7 @@ class NewsletterState(TypedDict, total=False):
     tool_results: str          # [리서치] 도구(검색 등) 실행 결과 모음
 
     # 2~4) 각 에이전트가 채우는 결과
+    title: str                 # [리서치] 보고서 제목
     research: str              # [리서치] 수집·정리한 자료
     draft: str                 # [작성]   뉴스레터 초안 (마크다운)
     review: ReviewResult       # [검수]   품질 판정 결과
