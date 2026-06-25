@@ -320,6 +320,7 @@ def page_input():
                 selected_types.append(t)
 
 
+
     with st.form("chat_form", clear_on_submit=True):
         st.markdown(
             "메시지 * (필수) "
@@ -605,7 +606,16 @@ def _result_detail(thread_id: str):
 
     # 발송 전(sent 아님)이면 세션과 무관하게 승인/반려 가능
     if snap["status"] != "sent":
-        # 발송에 쓸 이메일 템플릿 선택 (기본 = 환경설정의 기본 템플릿)
+        feedback = st.text_input(
+            "반려 시 수정 요청(선택)",
+            placeholder="예: 더 짧고 캐주얼하게",
+            key=f"reject_fb_{thread_id}",
+        )
+        if st.button("↩️ 반려 → 재작성", use_container_width=True, key=f"reject_{thread_id}"):
+            handle_reject_to_chat(thread_id, feedback.strip())
+
+        st.divider()
+        st.markdown("**📧 발송**")
         tpl_code = None
         try:
             templates = api.list_templates()
@@ -616,20 +626,20 @@ def _result_detail(thread_id: str):
             name_by = {t["code"]: t["name"] for t in templates}
             default_code = _default_template_code()
             idx = codes.index(default_code) if default_code in codes else 0
-            tpl_code = st.selectbox("이메일 템플릿", codes, index=idx,
-                                    format_func=lambda c: name_by.get(c, c),
-                                    key=f"tpl_{thread_id}")
-
-        feedback = st.text_input("반려 시 수정 요청(선택)", placeholder="예: 더 짧고 캐주얼하게")
-        c1, c2 = st.columns(2)
-        if c1.button("✅ 승인 → 발송", use_container_width=True):
+            tpl_code = st.selectbox(
+                "발송 시 이메일 템플릿",
+                codes,
+                index=idx,
+                format_func=lambda c: name_by.get(c, c),
+                key=f"tpl_{thread_id}",
+                help="승인·발송할 때 적용할 HTML 템플릿을 선택하세요.",
+            )
+        if st.button("✅ 승인 → 발송", use_container_width=True, key=f"approve_{thread_id}"):
             try:
                 st.session_state.snap = api.approve(thread_id, tpl_code)
             except Exception as e:
-                st.error(f"승인 실패: {e}")
+                st.error(f"발송 실패: {e}")
             st.rerun()
-        if c2.button("↩️ 반려 → 재작성", use_container_width=True):
-            handle_reject_to_chat(thread_id, feedback.strip())
     else:
         st.success("✅ 메일 발송 완료!")
         # 누구에게 언제 보냈는지 발송 내역 표시
@@ -1130,55 +1140,6 @@ def page_templates():
 
 
 # ==========================================================================
-# 8-3) 화면(페이지) — 내부 자료 (Chroma)
-# ==========================================================================
-def page_knowledge():
-    ui.render_page_head(
-        "📚 내부 자료 (지식DB)",
-        "data/ 폴더의 txt·pdf를 Chroma 벡터DB에 색인합니다. "
-        "생성 시 search_internal_docs 도구가 이 자료를 검색해 참고합니다.",
-    )
-
-    try:
-        status = api.knowledge_status()
-    except Exception as e:
-        st.error(f"API 호출 실패 — 서버 실행을 확인하세요: {e}")
-        return
-
-    c1, c2 = st.columns([3, 1])
-    c1.metric("색인된 조각 수", status.get("count", 0))
-    if c2.button("🔄 재색인", help="data 폴더를 다시 읽어 임베딩"):
-        with st.spinner("내부 자료를 다시 임베딩하는 중..."):
-            try:
-                res = api.knowledge_reindex()
-                st.success(f"재색인 완료 — {res.get('count', 0)} 조각")
-                st.rerun()
-            except Exception as e:
-                st.error(f"재색인 실패: {e}")
-    st.caption("자료 폴더: " + " · ".join(status.get("dirs", [])))
-
-    st.divider()
-    st.markdown("### 🔍 내부 자료 검색 테스트")
-    q = st.text_input("검색어", placeholder="예: 뉴스레터 발송 정책")
-    if q.strip():
-        try:
-            hits = api.knowledge_search(q.strip(), 3)
-        except Exception as e:
-            st.error(f"검색 실패: {e}")
-            hits = []
-        if not hits:
-            st.info("관련 내용을 찾지 못했습니다. (먼저 재색인했는지 확인)")
-        for h in hits:
-            st.markdown(
-                ui.list_card(
-                    f"📄 {h.get('source', '내부자료')}",
-                    (h.get("text", "")[:400] + "…") if len(h.get("text", "")) > 400 else h.get("text", ""),
-                ),
-                unsafe_allow_html=True,
-            )
-
-
-# ==========================================================================
 # 9) 사이드바(왼쪽 메뉴) + 페이지 전환
 # ==========================================================================
 PAGES = {
@@ -1186,7 +1147,6 @@ PAGES = {
     "📨 뉴스레터 생성 결과": page_result,
     "🗂️ 카테고리 등록": page_categories,
     "🧩 생성 타입 관리": page_newsletter_types,
-    "📚 내부 자료": page_knowledge,
     "📨 메일링리스트": userlists,
     "📧 템플릿 등록": page_templates,
     "⚙️ 환경설정": page_settings,
@@ -1199,7 +1159,6 @@ ENV_MENU_ITEMS = [
     "🗂️ 카테고리 등록",
     "🧩 생성 타입 관리",
     "📨 메일링리스트",
-    "📚 내부 자료",
     "📧 템플릿 등록",
     "⚙️ 환경설정",
 ]

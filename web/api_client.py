@@ -201,19 +201,6 @@ def delete_template(tid: int):
     return _delete(f"/templates/{tid}")
 
 
-# --------------------------- 내부 자료 (Chroma) ---------------------------
-def knowledge_status() -> dict:
-    return _get("/knowledge/status")
-
-
-def knowledge_reindex() -> dict:
-    return _post("/knowledge/reindex")
-
-
-def knowledge_search(q: str, k: int = 3) -> list:
-    return _get("/knowledge/search", q=q, k=k)
-
-
 def reject(thread_id: str, feedback: str) -> dict:
     return _post(f"/newsletters/{thread_id}/reject", {"feedback": feedback})
 
