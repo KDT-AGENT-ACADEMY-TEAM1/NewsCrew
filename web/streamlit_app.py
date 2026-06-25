@@ -319,6 +319,7 @@ def page_input():
             if col.checkbox(t["name"], value=False, key=f"type_chk_{t['id']}"):
                 selected_types.append(t)
 
+
     with st.form("chat_form", clear_on_submit=True):
         st.markdown(
             "메시지 * (필수) "
