@@ -9,7 +9,7 @@ def main():
     api_process = subprocess.Popen([sys.executable, "run_api.py"])
     
     # 서버가 뜨는 데 필요한 약간의 대기 시간 (선택 사항)
-    time.sleep(4)
+    time.sleep(7)
     
     # 2. Streamlit 프론트엔드 실행
     # sys.executable을 사용하면 현재 활성화된 가상환경(ml_env)의 파이썬을 확실하게 사용합니다.
