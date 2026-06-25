@@ -867,6 +867,8 @@ def render_review_feedback(feedback: str, score: int | None = None) -> str:
     structural: list[dict] = []
     category: list[dict] = []
     for line in raw_items:
+        if _is_review_helper_line(line):
+            continue
         parsed = _parse_review_line(line)
         if parsed:
             if parsed["label"] in _STRUCTURAL_LABELS:
@@ -899,6 +901,16 @@ def render_review_feedback(feedback: str, score: int | None = None) -> str:
 
     parts.append("</div>")
     return "".join(parts)
+
+
+def _is_review_helper_line(line: str) -> bool:
+    """Ignore legacy helper text that is not a checklist row."""
+    s = line.strip()
+    return (
+        s in {"[우선 수정 지침]", "[검수 체크리스트]"}
+        or s.startswith("다음 항목을 우선 보완하세요")
+        or s.startswith("- ")
+    )
 
 
 def _parse_review_line(line: str) -> dict | None:
