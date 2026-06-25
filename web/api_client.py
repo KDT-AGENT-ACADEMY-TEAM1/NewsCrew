@@ -59,6 +59,10 @@ def create_category(code, name, keywords=None, parent_id=None, description=None,
                                  "sort_order": sort_order, "checkpoints": checkpoints or []})
 
 
+def update_keywords(cid: int, keywords: list):
+    return _put(f"/categories/{cid}/keywords", {"keywords": keywords})
+
+
 def update_checkpoints(cid: int, checkpoints: list):
     return _put(f"/categories/{cid}/checkpoints", {"checkpoints": checkpoints})
 
@@ -93,6 +97,34 @@ def create_newsletter_type(code, name, description=None, sort_order=0):
 
 def delete_newsletter_type(tid: int):
     return _delete(f"/types/{tid}")
+
+
+# --------------------------- 기본 검수 체크리스트 ---------------------------
+def list_review_checklist(active_only: bool = False) -> list[dict]:
+    return _get("/review-checklist", active_only=1 if active_only else 0)
+
+
+def create_review_checklist_item(label: str, sort_order: int = 0):
+    return _post("/review-checklist", {"label": label, "sort_order": sort_order})
+
+
+def create_review_checklist_bulk(labels: list[str]):
+    return _post("/review-checklist/bulk", {"labels": labels})
+
+
+def update_review_checklist_item(item_id: int, label=None, sort_order=None, is_active=None):
+    payload = {}
+    if label is not None:
+        payload["label"] = label
+    if sort_order is not None:
+        payload["sort_order"] = sort_order
+    if is_active is not None:
+        payload["is_active"] = is_active
+    return _put(f"/review-checklist/{item_id}", payload)
+
+
+def delete_review_checklist_item(item_id: int):
+    return _delete(f"/review-checklist/{item_id}")
 
 
 # --------------------------- 메일링리스트 ---------------------------
@@ -131,9 +163,11 @@ def get_newsletter(thread_id: str) -> dict | None:
     return r.json()
 
 
-def generate(keywords, category_id=None, type_code=None) -> dict:
-    return _post("/newsletters/generate", {"keywords": keywords, "category_id": category_id,
-                                           "type_code": type_code})
+def generate(keywords, category_id=None, type_code=None, category_ids=None) -> dict:
+    payload: dict = {"keywords": keywords, "category_id": category_id, "type_code": type_code}
+    if category_ids:
+        payload["category_ids"] = category_ids
+    return _post("/newsletters/generate", payload)
 
 
 def approve(thread_id: str, template_code: str | None = None) -> dict:
