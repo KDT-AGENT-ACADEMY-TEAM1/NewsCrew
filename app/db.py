@@ -437,6 +437,37 @@ def delete_newsletter_type(type_id: int) -> int:
     return execute("DELETE FROM newsletter_type WHERE id = %s", (type_id,))
 
 
+def update_newsletter_type(
+    type_id: int,
+    name: str | None = None,
+    description: str | None = None,
+    sort_order: int | None = None,
+    is_active: bool | None = None,
+) -> int:
+    """생성 타입을 수정합니다."""
+    fields: list[str] = []
+    params: list = []
+    if name is not None:
+        fields.append("name = %s")
+        params.append(name.strip())
+    if description is not None:
+        fields.append("description = %s")
+        params.append(description.strip() or None)
+    if sort_order is not None:
+        fields.append("sort_order = %s")
+        params.append(sort_order)
+    if is_active is not None:
+        fields.append("is_active = %s")
+        params.append(1 if is_active else 0)
+    if not fields:
+        return 0
+    params.append(type_id)
+    return execute(
+        f"UPDATE newsletter_type SET {', '.join(fields)} WHERE id = %s",
+        tuple(params),
+    )
+
+
 def get_type_name(code: str | None) -> str | None:
     """타입 코드(summary/trend …)로 표시명을 가져옵니다. (없으면 코드 그대로, None이면 None)"""
     if not code:

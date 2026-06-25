@@ -99,6 +99,19 @@ def delete_newsletter_type(tid: int):
     return _delete(f"/types/{tid}")
 
 
+def update_newsletter_type(tid: int, name=None, description=None, sort_order=None, is_active=None):
+    payload = {}
+    if name is not None:
+        payload["name"] = name
+    if description is not None:
+        payload["description"] = description
+    if sort_order is not None:
+        payload["sort_order"] = sort_order
+    if is_active is not None:
+        payload["is_active"] = is_active
+    return _put(f"/types/{tid}", payload)
+
+
 # --------------------------- 기본 검수 체크리스트 ---------------------------
 def list_review_checklist(active_only: bool = False) -> list[dict]:
     return _get("/review-checklist", active_only=1 if active_only else 0)
