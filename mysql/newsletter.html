@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>NewsCrew 뉴스레터</title>
+</head>
+<body style="margin:0; padding:0; background:#F3F4F6; font-family:Arial, 'Noto Sans KR', sans-serif; color:#111827;">
+
+  <div style="max-width:640px; margin:0 auto; background:#ffffff;">
+
+    <!-- Header -->
+    <div style="background:#111827; padding:28px 24px; color:#ffffff;">
+      <div style="font-size:14px; color:#93C5FD; font-weight:bold;">
+        NewsCrew
+      </div>
+      <h1 style="margin:10px 0 0; font-size:26px; line-height:1.4;">
+        오늘의 AI 뉴스레터
+      </h1>
+      <p style="margin:10px 0 0; font-size:14px; color:#D1D5DB;">
+        핵심 이슈를 요약하고, 실무 관점으로 정리했습니다.
+      </p>
+    </div>
+
+    <!-- Summary -->
+    <div style="padding:28px 24px; border-bottom:1px solid #E5E7EB;">
+      <h2 style="margin:0 0 12px; font-size:20px; color:#111827;">
+        핵심 요약
+      </h2>
+      <p style="margin:0; font-size:15px; line-height:1.8; color:#374151;">
+        {{summary}}
+      </p>
+    </div>
+
+    <!-- Summary Type -->
+    <div style="padding:24px; border-bottom:1px solid #E5E7EB;">
+      <div style="font-size:13px; color:#2563EB; font-weight:bold; margin-bottom:8px;">
+        01 요약형
+      </div>
+      <h3 style="margin:0 0 10px; font-size:18px;">
+        빠르게 보는 핵심 내용
+      </h3>
+      <div style="font-size:15px; line-height:1.8; color:#374151;">
+        {{draft_summary}}
+      </div>
+    </div>
+
+    <!-- Trend Type -->
+    <div style="padding:24px; border-bottom:1px solid #E5E7EB;">
+      <div style="font-size:13px; color:#2563EB; font-weight:bold; margin-bottom:8px;">
+        02 트렌드 분석형
+      </div>
+      <h3 style="margin:0 0 10px; font-size:18px;">
+        흐름과 의미 분석
+      </h3>
+      <div style="font-size:15px; line-height:1.8; color:#374151;">
+        {{draft_trend}}
+      </div>
+    </div>
+
+    <!-- Practical Type -->
+    <div style="padding:24px; border-bottom:1px solid #E5E7EB;">
+      <div style="font-size:13px; color:#2563EB; font-weight:bold; margin-bottom:8px;">
+        03 실무 활용형
+      </div>
+      <h3 style="margin:0 0 10px; font-size:18px;">
+        현장에서 이렇게 활용할 수 있습니다
+      </h3>
+      <div style="font-size:15px; line-height:1.8; color:#374151;">
+        {{draft_practical}}
+      </div>
+    </div>
+
+    <!-- CTA -->
+    <div style="padding:28px 24px; text-align:center;">
+      <a href="{{newsletter_url}}"
+         style="display:inline-block; background:#2563EB; color:#ffffff; text-decoration:none; padding:13px 22px; border-radius:8px; font-size:15px; font-weight:bold;">
+        전체 뉴스레터 보기
+      </a>
+    </div>
+
+    <!-- Footer -->
+    <div style="padding:20px 24px; background:#F9FAFB; color:#6B7280; font-size:12px; line-height:1.6; text-align:center;">
+      이 메일은 NewsCrew를 통해 생성되었습니다.<br />
+      AI가 작성한 초안은 발송 전 사람이 검토하는 것을 권장합니다.
+    </div>
+
+  </div>
+
+</body>
+</html>
