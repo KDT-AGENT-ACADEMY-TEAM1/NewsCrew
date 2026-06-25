@@ -131,6 +131,22 @@ CREATE TABLE IF NOT EXISTS app_setting (
 -- 뉴스레터 생성 타입 (요약형 / 트렌드분석형 / 실무요약형 …)
 --   기본값은 app/db.py 의 _seed_newsletter_types() 가 넣습니다.
 -- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS email_template (
+    id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '템플릿 ID',
+    code        VARCHAR(50)  NOT NULL                COMMENT '템플릿 코드(영문 슬러그)',
+    name        VARCHAR(100) NOT NULL                COMMENT '템플릿 표시명',
+    html        MEDIUMTEXT   NULL                    COMMENT '템플릿 HTML ({{subject}}, {{body}}, {{unsubscribe_url}} 치환)',
+    is_active   TINYINT(1)   NOT NULL DEFAULT 1      COMMENT '사용 여부',
+    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '생성일시',
+    updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '수정일시',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_email_template_code (code)
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci
+  COMMENT='이메일 발송 템플릿';
+
+
 CREATE TABLE IF NOT EXISTS newsletter_send (
     id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '발송 로그 ID',
     thread_id   VARCHAR(64)  NOT NULL                COMMENT '보고서 thread_id',

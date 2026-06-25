@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from . import categories as cat
 from . import db
+from . import knowledge
 from . import mailer
 from . import subscribers as sub
 from .graph import graph
@@ -38,6 +39,7 @@ def _read_state(thread_id: str) -> dict:
         "thread_id": thread_id,
         "status": v.get("status"),
         "keywords": v.get("keywords", []),
+        "title": v.get("title") or "",
         "draft": v.get("draft", ""),
         "review": v.get("review", {}),
         "revision_count": v.get("revision_count", 0),
@@ -138,6 +140,30 @@ def api_types_create(b: TypeIn):
 @app.delete("/types/{tid}")
 def api_types_delete(tid: int):
     return {"deleted": db.delete_newsletter_type(tid)}
+
+
+# ==========================================================================
+# 이메일 템플릿 (email_template)
+# ==========================================================================
+class TemplateIn(BaseModel):
+    code: str
+    name: str
+    html: str = ""
+
+
+@app.get("/templates")
+def api_templates_list():
+    return db.list_templates()
+
+
+@app.post("/templates")
+def api_templates_create(b: TemplateIn):
+    return {"id": db.create_template(b.code, b.name, b.html)}
+
+
+@app.delete("/templates/{tid}")
+def api_templates_delete(tid: int):
+    return {"deleted": db.delete_template(tid)}
 
 
 # ==========================================================================
@@ -243,6 +269,7 @@ def api_newsletters_get(thread_id: str):
     return {
         "thread_id": row["thread_id"],
         "status": row["status"],
+        "title": row["title"] or "",
         "draft": row["draft"] or "",
         "review": {"score": row["review_score"], "feedback": row["review_feedback"]},
         "revision_count": row["revision_count"] or 0,
@@ -271,9 +298,9 @@ def api_newsletters_generate(b: GenerateIn):
 
 
 @app.post("/newsletters/{thread_id}/approve")
-def api_newsletters_approve(thread_id: str):
+def api_newsletters_approve(thread_id: str, template_code: Optional[str] = None):
     """승인 → 발송. 그래프가 살아 있으면 재개하고, DB 상태를 발송완료로 동기화한 뒤
-    그 카테고리에 관심 있는 구독자에게 메일을 보냅니다(이력 기록)."""
+    그 카테고리에 관심 있는 구독자에게 (선택한 템플릿으로) 메일을 보냅니다(이력 기록)."""
     cfg = _config(thread_id)
     state = graph.get_state(cfg)
     if state.values and "send" in state.next:
@@ -292,7 +319,8 @@ def api_newsletters_approve(thread_id: str):
                        "LEFT JOIN interest_category c ON c.id = n.category_id "
                        "WHERE n.thread_id = %s", (thread_id,))
     subject = f"{row['category']} 뉴스레터" if row.get("category") else "뉴스레터"
-    mailer.send_newsletter(thread_id, row["category_id"], subject, row["draft"] or "")
+    mailer.send_newsletter(thread_id, row["category_id"], subject, row["draft"] or "",
+                           template_code=template_code)
     return api_newsletters_get(thread_id)
 
 
@@ -342,6 +370,27 @@ def api_newsletters_status(thread_id: str, b: StatusIn):
 @app.delete("/newsletters/{thread_id}")
 def api_newsletters_delete(thread_id: str):
     return {"deleted": db.execute("DELETE FROM newsletter WHERE thread_id = %s", (thread_id,))}
+
+
+# ==========================================================================
+# 내부 자료 (Chroma 벡터DB)
+# ==========================================================================
+@app.get("/knowledge/status")
+def api_knowledge_status():
+    """색인된 내부자료 조각 수 + 내부 자료 검색 미리보기용 상태."""
+    return {"count": knowledge.count(), "dirs": ["data/관련규정", "data/관련자료"]}
+
+
+@app.post("/knowledge/reindex")
+def api_knowledge_reindex():
+    """내부 자료를 다시 읽어 재색인합니다(force)."""
+    return {"count": knowledge.init_chroma(force=True)}
+
+
+@app.get("/knowledge/search")
+def api_knowledge_search(q: str, k: int = 3):
+    """내부 자료 검색 (미리보기/확인용)."""
+    return knowledge.search(q, k)
 
 
 @app.get("/")
