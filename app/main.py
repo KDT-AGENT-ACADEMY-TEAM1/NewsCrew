@@ -84,6 +84,10 @@ class CategoryIn(BaseModel):
     checkpoints: list[str] = []
 
 
+class KeywordsIn(BaseModel):
+    keywords: list[str] = []
+
+
 class CheckpointsIn(BaseModel):
     checkpoints: list[str] = []
 
@@ -107,6 +111,11 @@ def api_categories_create(b: CategoryIn):
     return {"id": new_id}
 
 
+@app.put("/categories/{cid}/keywords")
+def api_categories_keywords(cid: int, b: KeywordsIn):
+    return {"updated": cat.update_keywords(cid, b.keywords)}
+
+
 @app.put("/categories/{cid}/checkpoints")
 def api_categories_checkpoints(cid: int, b: CheckpointsIn):
     return {"updated": cat.update_checkpoints(cid, b.checkpoints)}
@@ -127,6 +136,13 @@ class TypeIn(BaseModel):
     sort_order: int = 0
 
 
+class TypeUpdateIn(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
 @app.get("/types")
 def api_types_list(active_only: int = 0):
     return db.list_newsletter_types(active_only=bool(active_only))
@@ -137,9 +153,65 @@ def api_types_create(b: TypeIn):
     return {"id": db.create_newsletter_type(b.code, b.name, b.description, b.sort_order)}
 
 
+@app.put("/types/{tid}")
+def api_types_update(tid: int, b: TypeUpdateIn):
+    return {"updated": db.update_newsletter_type(
+        tid, b.name, b.description, b.sort_order, b.is_active)}
+
+
 @app.delete("/types/{tid}")
 def api_types_delete(tid: int):
     return {"deleted": db.delete_newsletter_type(tid)}
+
+
+# ==========================================================================
+# 기본 검수 체크리스트 (review_checklist)
+# ==========================================================================
+class ReviewChecklistIn(BaseModel):
+    label: str
+    sort_order: int = 0
+
+
+class ReviewChecklistUpdateIn(BaseModel):
+    label: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class ReviewChecklistBulkIn(BaseModel):
+    labels: list[str]
+
+
+@app.get("/review-checklist")
+def api_review_checklist_list(active_only: int = 0):
+    return db.list_review_checklist(active_only=bool(active_only))
+
+
+@app.post("/review-checklist")
+def api_review_checklist_create(b: ReviewChecklistIn):
+    return {"id": db.create_review_checklist_item(b.label, b.sort_order)}
+
+
+@app.post("/review-checklist/bulk")
+def api_review_checklist_bulk(b: ReviewChecklistBulkIn):
+    ids = []
+    base = len(db.list_review_checklist())
+    for i, label in enumerate(b.labels):
+        s = (label or "").strip()
+        if s:
+            ids.append(db.create_review_checklist_item(s, base + i))
+    return {"ids": ids, "created": len(ids)}
+
+
+@app.put("/review-checklist/{item_id}")
+def api_review_checklist_update(item_id: int, b: ReviewChecklistUpdateIn):
+    return {"updated": db.update_review_checklist_item(
+        item_id, b.label, b.sort_order, b.is_active)}
+
+
+@app.delete("/review-checklist/{item_id}")
+def api_review_checklist_delete(item_id: int):
+    return {"deleted": db.delete_review_checklist_item(item_id)}
 
 
 # ==========================================================================
@@ -212,6 +284,7 @@ def api_settings_update(b: SettingsIn):
 class GenerateIn(BaseModel):
     keywords: list[str]
     category_id: Optional[int] = None
+    category_ids: Optional[list[int]] = None
     type_code: Optional[str] = None
     max_revisions: Optional[int] = None
 
@@ -286,7 +359,10 @@ def api_newsletters_generate(b: GenerateIn):
     max_rev = b.max_revisions if b.max_revisions is not None else db.get_int_setting("max_revisions", 2)
     initial = {"keywords": b.keywords, "revision_count": 0,
                "max_revisions": max_rev, "status": "researching"}
-    if b.category_id is not None:
+    if b.category_ids:
+        initial["category_ids"] = b.category_ids
+        initial["category_id"] = b.category_ids[0]
+    elif b.category_id is not None:
         initial["category_id"] = b.category_id
     if b.type_code:
         initial["type_code"] = b.type_code

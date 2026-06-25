@@ -28,6 +28,18 @@ def _parse_keywords(raw) -> list[str]:
     return []
 
 
+def _parse_checkpoints(raw) -> list[str]:
+    """checkpoints 컬럼을 파싱합니다. JSON 배열·쉼표 구분 문자열 모두 지원."""
+    items = _parse_keywords(raw)
+    out: list[str] = []
+    for item in items:
+        for part in str(item).replace("\n", ",").split(","):
+            s = part.strip()
+            if s and s not in out:
+                out.append(s)
+    return out
+
+
 def get_flat_categories() -> list[dict]:
     """interest_category 에서 활성 카테고리를 읽어 평면 목록으로 돌려줍니다.
 
@@ -58,7 +70,7 @@ def get_flat_categories() -> list[dict]:
             "name": r["name"],
             "label": f"{parent} > {r['name']}" if parent else r["name"],
             "keywords": _parse_keywords(r.get("keywords")),
-            "checkpoints": _parse_keywords(r.get("checkpoints")),
+            "checkpoints": _parse_checkpoints(r.get("checkpoints")),
         })
     return flat
 
@@ -95,7 +107,7 @@ def list_categories() -> list[dict]:
     )
     for r in rows:
         r["keywords"] = _parse_keywords(r.get("keywords"))
-        r["checkpoints"] = _parse_keywords(r.get("checkpoints"))
+        r["checkpoints"] = _parse_checkpoints(r.get("checkpoints"))
     return rows
 
 
@@ -130,6 +142,15 @@ def create_category(
     )
 
 
+def update_keywords(cat_id: int, keywords: list[str]) -> int:
+    """카테고리 키워드 목록을 갱신합니다."""
+    from .db import execute
+    return execute(
+        "UPDATE interest_category SET keywords = %s WHERE id = %s",
+        (json.dumps(keywords or [], ensure_ascii=False), cat_id),
+    )
+
+
 def update_checkpoints(cat_id: int, checkpoints: list[str]) -> int:
     """카테고리의 '주요 체크포인트'를 갱신합니다."""
     from .db import execute
@@ -145,7 +166,17 @@ def get_checkpoints(cat_id: int | None) -> list[str]:
         return []
     from .db import fetch_one
     row = fetch_one("SELECT checkpoints FROM interest_category WHERE id = %s", (cat_id,))
-    return _parse_keywords(row.get("checkpoints")) if row else []
+    return _parse_checkpoints(row.get("checkpoints")) if row else []
+
+
+def get_checkpoints_for_categories(cat_ids: list[int] | None) -> list[str]:
+    """여러 카테고리의 체크포인트를 중복 없이 합칩니다."""
+    out: list[str] = []
+    for cid in cat_ids or []:
+        for cp in get_checkpoints(cid):
+            if cp not in out:
+                out.append(cp)
+    return out
 
 
 def delete_category(cat_id: int) -> int:

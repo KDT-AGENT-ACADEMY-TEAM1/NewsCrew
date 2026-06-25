@@ -35,6 +35,7 @@ class NewsletterState(TypedDict, total=False):
     # 1) 사용자 입력
     keywords: list[str]        # 관심 키워드 (예: ["전기차", "배터리"])
     category_id: int           # 연관 관심분야 ID (interest_category.id) — 카테고리로 생성 시 채워짐
+    category_ids: list[int]    # 선택한 관심분야 ID 목록 (체크포인트 병합용)
     type_code: str             # 뉴스레터 생성 타입 코드 (summary/trend/practical) — 스타일 설명은 DB에서 조회
 
     # [리서치 에이전트 ⇄ 도구] 대화 기록
