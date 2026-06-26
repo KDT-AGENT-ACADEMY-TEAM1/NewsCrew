@@ -1,0 +1,22 @@
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mysql-container
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: 1234       # 루트(root) 비밀번호 (필수)
+      MYSQL_DATABASE: mydatabase              # 컨테이너 실행 시 자동 생성될 데이터베이스 이름 (선택)
+      MYSQL_USER: dbuser                      # 추가로 생성할 사용자 계정 (선택)
+      MYSQL_PASSWORD: dbpassword              # 사용자 계정의 비밀번호 (선택)
+      TZ: Asia/Seoul                          # 한국 시간대 설정
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql             # 데이터를 지워지지 않게 영구 저장
+    command:
+      - --character-set-server=utf8mb4        # 한글 및 이모지 깨짐 방지
+      - --collation-server=utf8mb4_unicode_ci
+
+volumes:
+  mysql_data:
