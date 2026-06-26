@@ -24,7 +24,7 @@ services:
       RAG_SOURCE_FILE: /app/data/company_vector_seed_kr_listed_20.txt
       TZ: Asia/Seoul
     ports:
-      - "8000:8000"
+      - "80:8000"
       - "8501:8501"
     volumes:
       - chroma_data:/app/.chroma
