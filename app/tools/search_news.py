@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 
 search_web = TavilySearch(
-        tavily_api_key="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",
+        tavily_api_key="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",
         max_results=10,
         topic="news",
         include_answer=True,
