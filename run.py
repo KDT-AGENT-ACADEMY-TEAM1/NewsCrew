@@ -13,7 +13,7 @@ def main():
     
     # 2. Streamlit 프론트엔드 실행
     # sys.executable을 사용하면 현재 활성화된 가상환경(ml_env)의 파이썬을 확실하게 사용합니다.
-    web_process = subprocess.Popen([sys.executable, "-m", "streamlit", "run", "web/streamlit_app.py", "--server.port", "80"])
+    web_process = subprocess.Popen([sys.executable, "-m", "streamlit", "run", "web/streamlit_app.py", "--server.port", "8501"])
     
     try:
         # 두 프로세스가 종료될 때까지 대기
