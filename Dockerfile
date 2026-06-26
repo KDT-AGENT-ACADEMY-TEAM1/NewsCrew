@@ -25,6 +25,7 @@ COPY prompts.yaml ./
 COPY run.py ./
 COPY run_api.py ./
 COPY schema.sql ./
+COPY .env ./
 
 COPY start.sh ./
 RUN chmod +x start.sh
